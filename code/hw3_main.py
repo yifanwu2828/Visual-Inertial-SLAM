@@ -15,8 +15,8 @@ def tic(message=None):
     return time.time()
 
 
-def toc(tstart, name="Operation"):
-    print(f'############ {name} took: {(time.time() - tstart):.4f} sec. ############\n')
+def toc(t_start, name="Operation"):
+    print(f'############ {name} took: {(time.time() - t_start):.4f} sec. ############\n')
 
 
 def main():
