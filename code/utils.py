@@ -1,6 +1,19 @@
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 from transforms3d.euler import mat2euler
+
+
+def tic(message=None):
+    if message:
+        print(message)
+    else:
+        print("############ Time Start ############")
+    return time.time()
+
+
+def toc(t_start, name="Operation"):
+    print(f'############ {name} took: {(time.time() - t_start):.4f} sec. ############\n')
 
 
 def load_data(file_name, load_features=False):
