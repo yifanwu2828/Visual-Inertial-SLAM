@@ -8,6 +8,22 @@ from utils import *
 
 
 @jit(nopython=True)
+def vec2hat(x: np.ndarray) -> np.ndarray:
+    """
+    vector to hat map
+    :param x: vector
+    :type x: numpy array vector
+    :return: skew symmetric matrix
+    """
+    x1, x2, x3 = x[0], x[1], x[2]
+    x_hat = np.array([[0, -x3, x2],
+                      [x3, 0, -x1],
+                      [-x2, x1, 0]],
+                     dtype=np.float64)
+    return x_hat
+
+
+@jit(nopython=True)
 def reg2homo(X: np.ndarray) -> np.ndarray:
     """
     Convert Matrix to homogenous coordinate
@@ -27,13 +43,10 @@ def projection(q: np.ndarray, derivative=True) -> np.ndarray:
     Projection Function
     π(q) := 1/q3 @ q  ∈ R^{4}
     :param q: numpy.array
-    :param derivative: calculator dπ(q)/dq
+    :param derivative: calculate dπ(q)/dq
     """
     assert isinstance(q, np.ndarray)
-    q1 = q[0]
-    q2 = q[1]
-    q3 = q[2]
-    q4 = q[3]
+    q1, q2, q3, q4 = q[0], q[1], q[2], q[3]
     pi_q = q / q3
     dpi_dq = None
     if derivative:
@@ -42,7 +55,6 @@ def projection(q: np.ndarray, derivative=True) -> np.ndarray:
                            [0, 0, 0, 0],
                            [0, 0, -q4 / q3, 1]],
                           dtype=np.float64)
-
     return pi_q, dpi_dq
 
 
@@ -50,11 +62,11 @@ def projection(q: np.ndarray, derivative=True) -> np.ndarray:
 def get_M(fs_u: float, fs_v: float, cu: float, cv: float, b: float) -> np.ndarray:
     """
     Stereo Camera Calibration Matrix
-    :param fs_u: focal length [m],  pixel scaling [pixels/m]
-    :param fs_v: focal length [m],  pixel scaling [pixels/m]
-    :param cu: principal point [pixels]
-    :param cv: principal point [pixels]
-    :param b: stereo baseline [m]
+    :param: fs_u: focal length [m],  pixel scaling [pixels/m]
+    :param: fs_v: focal length [m],  pixel scaling [pixels/m]
+    :param: cu: principal point [pixels]
+    :param: cv: principal point [pixels]
+    :param: b: stereo baseline [m]
     :return 4x4 Intrinsic Matrix
     """
     M = np.array([[fs_u, 0, cu, 0],
@@ -82,11 +94,16 @@ def main():
     print(dq.shape)  # (4,4)
     print(dq)
     ############################
+    ''' vec2hat test '''
+    x = np.array([1, 2, 3])
+    x_hat = vec2hat(x)
+    ############################
     pass
 
 
 if __name__ == '__main__':
     np.seterr(all='raise')
+    VERBOSE = False
     '''
     data 1. this data has features, use this if you plan to skip the extra credit feature detection and tracking part
     t: time stamp 
@@ -124,21 +141,29 @@ if __name__ == '__main__':
 
     # imu_T_cam and cam_T_imu
     cam_T_imu = np.linalg.inv(imu_T_cam)  # transformation O_T_I from the IMU to camera optical frame (extrinsic param)
-
+    if VERBOSE:
+        print(f"K: {K.shape}\n{K}\n")
+        print(f"M: {M.shape}\n{M}\n")
+        print(f"imu_T_cam: {imu_T_cam.shape}\n{imu_T_cam}\n")
+        print(f"cam_T_imu: {cam_T_imu.shape}\n{cam_T_imu}")
     toc(start_load, name="Loading Data")
     ###################################################################################################################
     '''Dead Reckoning'''
+    for i in tqdm(range(1, np.size(t))):
+        tau = t[0, i] - t[0, i - 1]
+        u_t = np.vstack((linear_velocity[:, i].reshape(3, 1), angular_velocity[:, i].reshape(3, 1)))
 
-
-
-
-
-
-
-
-
-
-
+    # TODO: find world_T_imu -> T_t
+    '''observation model
+    z = h(m)+vt 
+    1. send mj from {w} to {C}
+        world_T_cam = world_T_imu @ imu_T_cam
+        m_o_ = o_T_imu @ inv(T_t) mj_
+    2. proj m_o_ into image plane
+        m_i_ = π(m_o)
+    3. Apply intrinsic M
+    z_i = M π(m_o_j) + noise
+    '''
     ###################################################################################################################
     # (a) IMU Localization via EKF Prediction
 
