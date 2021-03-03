@@ -7,10 +7,20 @@ from numba import jit
 from utils import *
 
 
-@jit(nopython=True)
-def vec2hat(x: np.ndarray) -> np.ndarray:
+def skew2vec(x_hat: np.ndarray)-> np.ndarray:
     """
-    vector to hat map
+    hat map so3 to vector
+    :param x_hat:
+    :return:
+    """
+    x1, x2, x3 = x_hat[2, 1], x_hat[0, 2], x_hat[1, 0]
+    return np.vstack((x1, x2, x3))
+
+
+@jit(nopython=True)
+def vec2skew(x: np.ndarray) -> np.ndarray:
+    """
+    vector to hat map so3
     :param x: vector
     :type x: numpy array vector
     :return: skew symmetric matrix
@@ -21,6 +31,28 @@ def vec2hat(x: np.ndarray) -> np.ndarray:
                       [-x2, x1, 0]],
                      dtype=np.float64)
     return x_hat
+
+
+def vec2twist_hat(x: np.ndarray) -> np.ndarray:
+    """
+    vector to twist hat map se3
+    :param x: 6x1
+    :return: 4x4 twist matrices
+    """
+    assert x.size == 6
+    return np.block([[vec2skew(x[3:6, 0]), x[0:3, 0].reshape(3, 1)],
+                     [np.zeros((1, 4))]])
+
+
+def vec2twist_wedge(x):
+    """
+    vector to twist wedge se3
+    :param x: 6x1
+    :return: 6x6 twist matrices
+    """
+    assert x.size == 6
+    return np.block([[vec2skew(x[3:6, 0]), vec2skew(x[0:3, 0])],
+                     [np.zeros((3, 3)), vec2skew(x[3:6, 0])]])
 
 
 @jit(nopython=True)
@@ -38,24 +70,36 @@ def reg2homo(X: np.ndarray) -> np.ndarray:
     return X_
 
 
+@jit(nopython=True)
 def projection(q: np.ndarray, derivative=True) -> np.ndarray:
     """
     Projection Function
     π(q) := 1/q3 @ q  ∈ R^{4}
     :param q: numpy.array
-    :param derivative: calculate dπ(q)/dq
+    :param derivative:
     """
-    assert isinstance(q, np.ndarray)
-    q1, q2, q3, q4 = q[0], q[1], q[2], q[3]
+    # assert isinstance(q, np.ndarray)
+    # Prevent Divide by zero error
+    q3 = q[2] + 1e-9
     pi_q = q / q3
-    dpi_dq = None
-    if derivative:
-        dpi_dq = np.array([[1, 0, -q1 / q3, 0],
-                           [0, 1, -q2 / q3, 0],
-                           [0, 0, 0, 0],
-                           [0, 0, -q4 / q3, 1]],
-                          dtype=np.float64)
-    return pi_q, dpi_dq
+    return pi_q
+
+
+@jit(nopython=True)
+def projection_derivative(q: np.ndarray) -> np.ndarray:
+    """
+    Projection Function Derivative
+    calculate dπ(q)/dq
+    :param q: numpy.array
+    return: dπ(q)/dq
+    """
+    dpi_dq = np.eye(4)
+    dpi_dq[2, 2] = 0.0
+    dpi_dq[0, 2] = -q[0] / q[2]
+    dpi_dq[1, 2] = -q[1] / q[2]
+    dpi_dq[3, 2] = -q[3] / q[2]
+    dpi_dq = dpi_dq / q[2]
+    return dpi_dq
 
 
 @jit(nopython=True)
@@ -85,8 +129,10 @@ def main():
     """
     ############################
     '''test pi'''
+    print("'''test pi'''")
     q = np.array([1, 2, 3, 1])
-    pi_q, dq = projection(q)
+    pi_q = projection(q)
+    dq = projection_derivative(q)
     print(q.shape)  # (4,)
     print(q)
     print(pi_q.shape)  # (4,)
@@ -95,8 +141,12 @@ def main():
     print(dq)
     ############################
     ''' vec2hat test '''
+    print("''' vec2hat test '''")
     x = np.array([1, 2, 3])
-    x_hat = vec2hat(x)
+    x_hat = vec2skew(x)
+    print(x)
+    print(x_hat.shape)
+    print(x_hat)
     ############################
     pass
 
@@ -151,18 +201,23 @@ if __name__ == '__main__':
     '''Dead Reckoning'''
     for i in tqdm(range(1, np.size(t))):
         tau = t[0, i] - t[0, i - 1]
-        u_t = np.vstack((linear_velocity[:, i].reshape(3, 1), angular_velocity[:, i].reshape(3, 1)))
-
-    # TODO: find world_T_imu -> T_t
-    '''observation model
-    z = h(m)+vt 
+        # [ρ θ].T 6x1
+        u_t = np.vstack((linear_velocity[:, i].reshape(3, 1), angular_velocity[:, i].reshape(3, 1)))  # u(t) \in R^{6}
+        u_t_hat = vec2twist_hat(u_t)  # ξ^ \in R^{4x4}
+        u_t_wedge = vec2twist_wedge(u_t)  # ξ` \in R^{6x6}
+        break
+    x = np.array([1, 2, 3])
+    x_hat = vec2skew(x)
+    # TODO: find world_T_imu -> T_t     Tt:= WTI,t
+    '''Observation model
+    z = h(T_t, mj)+vt(noise)          vt ∼ N (0, I ⊗ V) = diag[V...V]  
     1. send mj from {w} to {C}
         world_T_cam = world_T_imu @ imu_T_cam
         m_o_ = o_T_imu @ inv(T_t) mj_
     2. proj m_o_ into image plane
         m_i_ = π(m_o)
     3. Apply intrinsic M
-    z_i = M π(m_o_j) + noise
+    z_i = M π(m_o_j) + vt(noise)
     '''
     ###################################################################################################################
     # (a) IMU Localization via EKF Prediction
