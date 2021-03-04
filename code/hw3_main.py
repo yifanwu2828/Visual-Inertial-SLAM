@@ -233,8 +233,6 @@ if __name__ == '__main__':
         u_t_wedge = vec2twist_wedge(u_t)  # ξ` \in R^{6x6}
         T_t = T_t@linalg.expm(tau * u_t_hat)
         pose_trajectory[:, :, i] = T_t
-        if i % 500 == 0:
-            visualize_trajectory_2d(pose_trajectory, show_ori=True)
     visualize_trajectory_2d(pose_trajectory, show_ori=True)
     # TODO: find world_T_imu -> T_t     Tt:= W_T_I,t
     '''Observation model
