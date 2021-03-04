@@ -1,6 +1,6 @@
-import time
 
 import numpy as np
+from scipy import linalg
 from tqdm import tqdm
 from numba import jit
 
@@ -38,6 +38,8 @@ def vec2twist_hat(x: np.ndarray) -> np.ndarray:
     vector to twist hat map se3
     :param x: 6x1
     :return: 4x4 twist matrices
+            [w^(t) v(t)]
+            [0,     0]
     """
     assert x.size == 6
     return np.block([[vec2skew(x[3:6, 0]), x[0:3, 0].reshape(3, 1)],
@@ -68,6 +70,29 @@ def reg2homo(X: np.ndarray) -> np.ndarray:
     ones = np.ones((1, X.shape[1]), dtype=np.float64)
     X_ = np.concatenate((X, ones), axis=0)
     return X_
+
+
+def get_T(Rot: np.ndarray, pos: np.ndarray) -> np.ndarray:
+    """
+    Calculate Rigid Body Pose
+    :param: R: rotation matrix
+    :type: 3x3 numpy array
+    :param: p: translation matrix
+    :type: (3,) numpy array
+    :return: pose T [R P
+                     0.T 1 ]
+    """
+    assert isinstance(Rot, np.ndarray)
+    assert isinstance(pos, np.ndarray)
+    assert np.size(Rot) == 9
+    assert pos.ndim == 1
+    x, y, z = pos
+    T = np.array([[0, 0, 0, x],
+                  [0, 0, 0, y],
+                  [0, 0, 0, z],
+                  [0, 0, 0, 1]])
+    T[0:3, 0:3] = Rot
+    return T
 
 
 @jit(nopython=True)
@@ -176,18 +201,14 @@ if __name__ == '__main__':
     filename = "./data/10.npz"
     t, features, linear_velocity, angular_velocity, K, b, imu_T_cam = load_data(filename, load_features=True)
     del filename
-    '''
-    K = [fs_u,  fs_theta=0  cu]
-        [0,     fsv,        cv]
-        [0,     0,          1 ]
-    '''
     # CAM Param
     fs_u = K[0, 0]  # focal length [m],  pixel scaling [pixels/m]
     fs_v = K[1, 1]  # focal length [m],  pixel scaling [pixels/m]
-    cu = K[0, 2]  # principal point [pixels]
-    cv = K[1, 2]  # principal point [pixels]
-    b = float(b)  # stereo baseline [m]
-    M = get_M(fs_u, fs_v, cu, cv, b)  # intrinsic matrix
+    cu = K[0, 2]    # principal point [pixels]
+    cv = K[1, 2]    # principal point [pixels]
+    b = float(b)    # stereo baseline [m]
+    # Stereo camera intrinsic calibration matrix M
+    M = get_M(fs_u, fs_v, cu, cv, b)
 
     # imu_T_cam and cam_T_imu
     cam_T_imu = np.linalg.inv(imu_T_cam)  # transformation O_T_I from the IMU to camera optical frame (extrinsic param)
@@ -198,17 +219,25 @@ if __name__ == '__main__':
         print(f"cam_T_imu: {cam_T_imu.shape}\n{cam_T_imu}")
     toc(start_load, name="Loading Data")
     ###################################################################################################################
+    '''Init pose_trajectory '''
+    pose_trajectory = np.zeros((4, 4, np.size(t)), dtype=np.float64)
+    # At t = 0, R=eye(3) p =zeros(3)
+    T_t = np.eye(4)
+    pose_trajectory[:, :, 0] = T_t
+
     '''Dead Reckoning'''
     for i in tqdm(range(1, np.size(t))):
         tau = t[0, i] - t[0, i - 1]
-        # [ρ θ].T 6x1
+        # Generalized velocity:[vt wt].T 6x1
         u_t = np.vstack((linear_velocity[:, i].reshape(3, 1), angular_velocity[:, i].reshape(3, 1)))  # u(t) \in R^{6}
         u_t_hat = vec2twist_hat(u_t)  # ξ^ \in R^{4x4}
         u_t_wedge = vec2twist_wedge(u_t)  # ξ` \in R^{6x6}
-        break
-    x = np.array([1, 2, 3])
-    x_hat = vec2skew(x)
-    # TODO: find world_T_imu -> T_t     Tt:= WTI,t
+        T_t = T_t@linalg.expm(tau * u_t_hat)
+        pose_trajectory[:, :, i] = T_t
+        if i % 500 == 0:
+            visualize_trajectory_2d(pose_trajectory, show_ori=True)
+    visualize_trajectory_2d(pose_trajectory, show_ori=True)
+    # TODO: find world_T_imu -> T_t     Tt:= W_T_I,t
     '''Observation model
     z = h(T_t, mj)+vt(noise)          vt ∼ N (0, I ⊗ V) = diag[V...V]  
     1. send mj from {w} to {C}
