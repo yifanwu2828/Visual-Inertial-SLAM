@@ -1,4 +1,3 @@
-import numpy as np
 from scipy import linalg
 from tqdm import tqdm
 from numba import jit
@@ -100,7 +99,6 @@ def projection(q: np.ndarray) -> np.ndarray:
     Projection Function
     π(q) := 1/q3 @ q  ∈ R^{4}
     :param q: numpy.array
-    :param derivative:
     """
     # assert isinstance(q, np.ndarray)
     # Prevent Divide by zero error
@@ -184,6 +182,8 @@ if __name__ == '__main__':
                 with shape 1*t
     features: visual feature point coordinates in stereo images, 
                 with shape 4*n*t, where n is number of features
+                (4, 13289, 3026)
+                (pixels, landmarks, timestamps)
     linear_velocity: velocity measurements in IMU frame
                 with shape 3*t
     angular_velocity: angular velocity measurements in IMU frame
@@ -221,24 +221,26 @@ if __name__ == '__main__':
     '''Init pose_trajectory '''
     pose_trajectory = np.zeros((4, 4, np.size(t)), dtype=np.float64)
     # At t = 0, R=eye(3) p =zeros(3)
-    T_t = np.eye(4)
-    pose_trajectory[:, :, 0] = T_t
+    T_imu_mu_t = np.eye(4)
+    imu_sigma_t = np.eye(6)
+    pose_trajectory[:, :, 0] = T_imu_mu_t
 
     '''Dead Reckoning'''
     for i in tqdm(range(1, np.size(t))):
         tau = t[0, i] - t[0, i - 1]
         # Generalized velocity:[vt wt].T 6x1
-        u_t = np.vstack((linear_velocity[:, i].reshape(3, 1), angular_velocity[:, i].reshape(3, 1)))  # u(t) \in R^{6}
+        u_t = np.vstack((linear_velocity[:, i].reshape(3, 1),
+                         angular_velocity[:, i].reshape(3, 1)))  # u(t) \in R^{6}
         u_t_hat = vec2twist_hat(u_t)  # ξ^ \in R^{4x4}
         u_t_adj = vec2twist_adj(u_t)  # ξ` \in R^{6x6}
-        # world_T_imu
-        T_t = T_t @ linalg.expm(tau * u_t_hat)
+        # Discrete-time Pose Kinematics:
+        T_imu_mu_t = T_imu_mu_t @ linalg.expm(tau * u_t_hat)
         # imu_T_world = np.linalg.inv(T_t)
-        pose_trajectory[:, :, i] = T_t
+        pose_trajectory[:, :, i] = T_imu_mu_t
     visualize_trajectory_2d(pose_trajectory, show_ori=True)
-    # TODO: find world_T_imu -> T_t     Tt:= W_T_I,t
+    ###########################################################################################################
     '''Observation model
-    z = h(T_t, mj)+vt(noise)          vt ∼ N (0, I ⊗ V) = diag[V...V]  
+    z = h(T_t, mj)+vt(noise)     Tt:= W_T_I,t       vt ∼ N (0, I ⊗ V) = diag[V...V]  
     1. send mj from {w} to {C}
         world_T_cam = world_T_imu @ imu_T_cam
         m_o_ = o_T_imu @ inv(T_t) mj_
