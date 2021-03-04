@@ -1,4 +1,3 @@
-
 import numpy as np
 from scipy import linalg
 from tqdm import tqdm
@@ -7,7 +6,7 @@ from numba import jit
 from utils import *
 
 
-def skew2vec(x_hat: np.ndarray)-> np.ndarray:
+def skew2vec(x_hat: np.ndarray) -> np.ndarray:
     """
     hat map so3 to vector
     :param x_hat:
@@ -96,7 +95,7 @@ def get_T(Rot: np.ndarray, pos: np.ndarray) -> np.ndarray:
 
 
 @jit(nopython=True)
-def projection(q: np.ndarray, derivative=True) -> np.ndarray:
+def projection(q: np.ndarray) -> np.ndarray:
     """
     Projection Function
     π(q) := 1/q3 @ q  ∈ R^{4}
