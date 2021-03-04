@@ -143,6 +143,29 @@ def get_M(fs_u: float, fs_v: float, cu: float, cv: float, b: float) -> np.ndarra
     return M
 
 
+@jit(nopython=True)
+def pixel2world(pixels: np.ndarray, K: np.ndarray, b: float, world_T_cam: np.ndarray) -> np.ndarray:
+    """
+    Convert from pixels to world coordinates
+    :param pixels: pixel coordinates with number of observations
+    :param K: (left)camera intrinsic matrix with shape 3*3
+    :param b: stereo camera baseline with shape 1
+    :param world_T_cam: pose from camera to world
+    :return: world frame landmark positions in homogenous coordinates
+    """
+    fs_u = K[0, 0]  # focal length [m],  pixel scaling [pixels/m]
+    fs_v = K[1, 1]  # focal length [m],  pixel scaling [pixels/m]
+    cu = K[0, 2]  # principal point [pixels]
+    cv = K[1, 2]  # principal point [pixels]
+    m_o = np.ones((4, pixels.shape[1]))
+    m_o[2, :] = fs_u*b / (pixels[0, :] - pixels[2, :])
+    m_o[1, :] = (pixels[1, :] - cv) / fs_v * m_o[2, :]
+    m_o[0, :] = (pixels[0, :] - cu) / fs_u * m_o[2, :]
+    # Transform from pixel to world frame in in homogenous coordinates
+    m_world = world_T_cam @ m_o
+    return m_world
+
+
 def main():
     """
         data 2. this data does NOT have features, you need to do feature detection and tracking but will receive extra
@@ -199,18 +222,19 @@ if __name__ == '__main__':
     start_load = tic("########## Loading Data 1 ##########")
     filename = "./data/10.npz"
     t, features, linear_velocity, angular_velocity, K, b, imu_T_cam = load_data(filename, load_features=True)
+    print(f"features: {features.shape}")
     del filename
     # CAM Param
     fs_u = K[0, 0]  # focal length [m],  pixel scaling [pixels/m]
     fs_v = K[1, 1]  # focal length [m],  pixel scaling [pixels/m]
-    cu = K[0, 2]    # principal point [pixels]
-    cv = K[1, 2]    # principal point [pixels]
-    b = float(b)    # stereo baseline [m]
+    cu = K[0, 2]  # principal point [pixels]
+    cv = K[1, 2]  # principal point [pixels]
+    b = float(b)  # stereo baseline [m]
     # Stereo camera intrinsic calibration matrix M
     M = get_M(fs_u, fs_v, cu, cv, b)
 
-    # imu_T_cam and cam_T_imu
-    cam_T_imu = np.linalg.inv(imu_T_cam)  # transformation O_T_I from the IMU to camera optical frame (extrinsic param)
+    # transformation O_T_I from the IMU to camera optical frame (extrinsic param)
+    cam_T_imu = np.linalg.inv(imu_T_cam)
     if VERBOSE:
         print(f"K: {K.shape}\n{K}\n")
         print(f"M: {M.shape}\n{M}\n")
@@ -235,9 +259,25 @@ if __name__ == '__main__':
         u_t_adj = vec2twist_adj(u_t)  # ξ` \in R^{6x6}
         # Discrete-time Pose Kinematics:
         T_imu_mu_t = T_imu_mu_t @ linalg.expm(tau * u_t_hat)
-        # imu_T_world = np.linalg.inv(T_t)
+        imu_T_world = np.linalg.inv(T_imu_mu_t)
         pose_trajectory[:, :, i] = T_imu_mu_t
-    visualize_trajectory_2d(pose_trajectory, show_ori=True)
+
+        # world frame to cam frame
+        cam_T_world = cam_T_imu @ imu_T_world
+        # cam frame to world  frame
+        world_T_cam = np.linalg.inv(cam_T_world)
+
+        # Valid observed features at time t
+        features_t = features[:, :, i]
+        feature_index = np.where(np.sum(features_t, axis=1) != -4)  # type tuple
+        update_feature_index = np.empty(0, dtype=np.int16)
+        update_feature = np.empty((4, 0))
+
+        if np.size(feature_index) != 0:
+            observed_features_pixels = features_t[:, feature_index].reshape(-1, np.size(feature_index))
+            m_o_ = pixel2world(observed_features_pixels, K, b, world_T_cam)
+
+    # visualize_trajectory_2d(pose_trajectory, show_ori=True)
     ###########################################################################################################
     '''Observation model
     z = h(T_t, mj)+vt(noise)     Tt:= W_T_I,t       vt ∼ N (0, I ⊗ V) = diag[V...V]  
@@ -249,6 +289,7 @@ if __name__ == '__main__':
     3. Apply intrinsic M
     z_i = M π(m_o_j) + vt(noise)
     '''
+
     ###################################################################################################################
     # (a) IMU Localization via EKF Prediction
 
