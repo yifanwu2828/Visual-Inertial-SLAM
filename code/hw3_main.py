@@ -45,9 +45,9 @@ def vec2twist_hat(x: np.ndarray) -> np.ndarray:
                      [np.zeros((1, 4))]])
 
 
-def vec2twist_wedge(x):
+def vec2twist_adj(x):
     """
-    vector to twist wedge se3
+    vector to twist ad(se3)
     :param x: 6x1
     :return: 6x6 twist matrices
     """
@@ -230,8 +230,10 @@ if __name__ == '__main__':
         # Generalized velocity:[vt wt].T 6x1
         u_t = np.vstack((linear_velocity[:, i].reshape(3, 1), angular_velocity[:, i].reshape(3, 1)))  # u(t) \in R^{6}
         u_t_hat = vec2twist_hat(u_t)  # ξ^ \in R^{4x4}
-        u_t_wedge = vec2twist_wedge(u_t)  # ξ` \in R^{6x6}
-        T_t = T_t@linalg.expm(tau * u_t_hat)
+        u_t_adj = vec2twist_adj(u_t)  # ξ` \in R^{6x6}
+        # world_T_imu
+        T_t = T_t @ linalg.expm(tau * u_t_hat)
+        # imu_T_world = np.linalg.inv(T_t)
         pose_trajectory[:, :, i] = T_t
     visualize_trajectory_2d(pose_trajectory, show_ori=True)
     # TODO: find world_T_imu -> T_t     Tt:= W_T_I,t
