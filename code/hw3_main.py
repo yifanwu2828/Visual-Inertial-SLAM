@@ -159,24 +159,30 @@ def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu) -> np.n
                   [0, 0, 1, 0]],
                  dtype=np.float64)
     P_T = P.T
-    Nt = update_feature_index.shape[0]
+    Nt = len(update_feature_index)
     H = np.zeros((4 * Nt, 3 * Mt), dtype=np.float64)  # Ht+1 ∈ R^{4Nt×3M}
     for j in prange(Nt):
         current_index = update_feature_index[j]
-        H_ij = M @ projection_derivative(cam_T_world @ mu[:, j])@ cam_T_world @ P_T  # ∈ R^{4×3}
+        H_ij = M @ projection_derivative(cam_T_world @ mu[:, j]) @ cam_T_world @ P_T  # ∈ R^{4×3}
         H[j * 4:(j + 1) * 4, current_index * 3:(current_index + 1) * 3] = H_ij
     return H
 
 
-def get_kalman_gain():
+def get_mapping_kalman_gain(sigma, H, Nt):
     """
     Calculate Kalman Gain
     :return:
     """
-    pass
+
+    # innovation cov
+    # S = H @ sigma @ H.T + np.eye(4*Nt) #*V
+    V = 5
+    H_T=H.T
+    K = sigma @ H_T @ np.linalg.inv(H @ sigma @ H_T + np.eye(4 * Nt) * V)
+
+    return K
 
 
-@njit
 def get_predicted_obs(M, cam_T_world, mu):
     """
     Predicted observations based on µt
@@ -255,6 +261,17 @@ def main():
     print(x_hat.shape)
     print(x_hat)
     ############################
+    '''Observation model
+    z = h(T_t, mj)+vt(noise)     Tt:= W_T_I,t       vt ∼ N (0, I ⊗ V) = diag[V...V]
+    1. send mj from {w} to {C}
+        world_T_cam = world_T_imu @ imu_T_cam
+        m_o_ = o_T_imu @ inv(T_t) mj_ -- implemented
+    2. proj m_o_ into image plane
+        m_i_ = π(m_o)
+    3. Apply intrinsic M
+    z_i = M π(m_o_j) + vt(noise)
+    '''
+    ############################
     pass
 
 
@@ -301,8 +318,9 @@ if __name__ == '__main__':
     b = float(b)  # stereo baseline [m]
     # Stereo camera intrinsic calibration matrix M
     M = get_M(fs_u, fs_v, cu, cv, b)
+    del fs_u, fs_v, cu, cv
     # transformation O_T_I from the IMU to camera optical frame (extrinsic param)
-    cam_T_imu = np.linalg.inv(imu_T_cam)
+    cam_T_imu = linalg.inv(imu_T_cam)
     if VERBOSE:
         print(f"vt_sigma: {vt_x_sigma, vt_y_sigma, vt_z_sigma}")
         print(f"wt_sigma: {wt_r_sigma, wt_p_sigma, wt_y_sigma}")
@@ -319,8 +337,10 @@ if __name__ == '__main__':
     imu_sigma_t = np.diag(cov_diag)
     pose_trajectory[:, :, 0] = T_imu_mu_t
     '''Init landmarks '''
-    landmarks_mu_t = -1 * np.ones((4, num_landmarks))  # µt ∈ R^{3M} with homogenous coord
-    landmarks_sigma_t = np.eye(3 * num_landmarks)  # Σt ∈ R^{3M×3M}
+    landmarks_mu_t = np.zeros((3, num_landmarks), dtype=np.float64)  # µt ∈ R^{3M} with homogenous coord
+    landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
+
+    obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float64)
     ###################################################################################################################
     '''Debug Var'''
     idx = set()
@@ -344,42 +364,47 @@ if __name__ == '__main__':
 
         # Valid observed features at time t
         features_t = features[:, :, i]
-        feature_index = np.array(np.where(np.sum(features_t, axis=0) != -4))
-        update_feature_index = np.empty(0, dtype=np.int64)
+        feature_index = tuple(np.where(np.sum(features_t, axis=0) != -4)[0])
+        update_feature_index = []
         update_feature = np.empty((4, 0), dtype=np.float64)
 
         # landmarks are observed
-        num_obs = feature_index.size
+        num_obs = len(feature_index)
         if num_obs != 0:
-            '''Observation model
-            z = h(T_t, mj)+vt(noise)     Tt:= W_T_I,t       vt ∼ N (0, I ⊗ V) = diag[V...V]  
-            1. send mj from {w} to {C}
-                world_T_cam = world_T_imu @ imu_T_cam
-                m_o_ = o_T_imu @ inv(T_t) mj_ -- implemented
-            2. proj m_o_ into image plane
-                m_i_ = π(m_o)
-            3. Apply intrinsic M
-            z_i = M π(m_o_j) + vt(noise)
-            '''
             # Extract observed_features_pixels
-            observed_features_pixels = features_t[:, feature_index].reshape(-1, num_obs)
+            observed_features_pixels = features_t[:, feature_index]
             # Transform pixels to world frame in homogenous coord
             m_world_ = pixel2world(observed_features_pixels, K, b, world_T_cam)
+            assert observed_features_pixels.size == m_world_.size
+
             for j in range(num_obs):
-                current_index = feature_index[0, j]
+                current_index = feature_index[j]
                 # if first seen, initialize landmark
-                if np.array_equal(landmarks_mu_t[:, current_index], [-1, -1, -1, -1]):
-                    landmarks_mu_t[:, current_index] = m_world_[:, j]
+                if np.array_equal(obs_mu_t[:, current_index], np.array([-1, -1, -1, -1])):
+                    obs_mu_t[:, current_index] = observed_features_pixels[:, j]
+                    landmarks_mu_t[:, current_index] = np.delete(m_world_[:, j], 3, axis=0)
                 # else update landmark position
                 else:
-                    update_feature_index = np.append(update_feature_index, current_index)
+                    update_feature_index.append(current_index)
                     update_feature = np.hstack((update_feature, m_world_[:, j].reshape(4, 1)))
             # if update_feature is not empty
-            if update_feature_index.shape[0] != 0:
-                mu_t_j = landmarks_mu_t[:, update_feature_index].reshape(4, -1)
+            Nt = len(update_feature_index)
+            if Nt != 0:
+                mu_t_j = reg2homo(landmarks_mu_t[:, update_feature_index])
+                # print(f"{Nt},({4 * Nt},{num_landmarks})")
                 H = get_obs_model_Jacobian(M, cam_T_world, num_landmarks, update_feature_index, mu_t_j)
-                z = features_t[:, update_feature_index].reshape((4, -1))
+                assert H.shape[0]== 4*Nt
+                z = features_t[:, update_feature_index]
                 z_pred = get_predicted_obs(M, cam_T_world, mu_t_j)
+                K = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt)
+        #         print("\n")
+        #         print("Nt",Nt)
+        #         print("z",z_pred.shape)
+        #         print("H",H.shape)
+        #         print("K",K.shape)
+        #         print("mu",landmarks_mu_t.shape)
+        #         print("sigma",landmarks_sigma_t.shape)
+        #         landmarks_mu_t = landmarks_mu_t + K@ (z-z_pred)
 
     # visualize_trajectory_2d(pose_trajectory, show_ori=True)
     ###########################################################################################################
