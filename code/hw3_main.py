@@ -1,6 +1,6 @@
 from scipy import linalg
 from tqdm import tqdm
-from numba import jit
+from numba import njit, prange
 
 from utils import *
 
@@ -15,7 +15,7 @@ def skew2vec(x_hat: np.ndarray) -> np.ndarray:
     return np.vstack((x1, x2, x3))
 
 
-@jit(nopython=True)
+@njit
 def vec2skew(x: np.ndarray) -> np.ndarray:
     """
     vector to hat map so3
@@ -55,7 +55,7 @@ def vec2twist_adj(x):
                      [np.zeros((3, 3)), vec2skew(x[3:6, 0])]])
 
 
-@jit(nopython=True)
+@njit
 def reg2homo(X: np.ndarray) -> np.ndarray:
     """
     Convert Matrix to homogenous coordinate
@@ -93,7 +93,7 @@ def get_T(Rot: np.ndarray, pos: np.ndarray) -> np.ndarray:
     return T
 
 
-@jit(nopython=True)
+@njit
 def projection(q: np.ndarray) -> np.ndarray:
     """
     Projection Function
@@ -107,7 +107,7 @@ def projection(q: np.ndarray) -> np.ndarray:
     return pi_q
 
 
-@jit(nopython=True)
+@njit
 def projection_derivative(q: np.ndarray) -> np.ndarray:
     """
     Projection Function Derivative
@@ -124,7 +124,7 @@ def projection_derivative(q: np.ndarray) -> np.ndarray:
     return dpi_dq
 
 
-@jit(nopython=True)
+@njit
 def get_M(fs_u: float, fs_v: float, cu: float, cv: float, b: float) -> np.ndarray:
     """
     Stereo Camera Calibration Matrix
@@ -133,7 +133,7 @@ def get_M(fs_u: float, fs_v: float, cu: float, cv: float, b: float) -> np.ndarra
     :param: cu: principal point [pixels]
     :param: cv: principal point [pixels]
     :param: b: stereo baseline [m]
-    :return 4x4 Intrinsic Matrix
+    :return 4x4 stereo camera calibration matrix
     """
     M = np.array([[fs_u, 0, cu, 0],
                   [0, fs_v, cv, 0],
@@ -143,7 +143,69 @@ def get_M(fs_u: float, fs_v: float, cu: float, cv: float, b: float) -> np.ndarra
     return M
 
 
-@jit(nopython=True)
+def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu) -> np.ndarray:
+    """
+    Observation model Jacobian H_{t+1} ∈ R^{4Nt×3M}
+    :param M: 4x4 stereo camera calibration matrix
+    :param cam_T_world: 4x4 transformation matrix {W} -> {CAM}
+    :param Mt:total_number_of_landmarks: 132896
+    :param update_feature_index:
+    :param mu: landmarks_mu_t
+    :return: H_{t+1}
+    """
+    # Projection Matrix
+    P = np.array([[1, 0, 0, 0],
+                  [0, 1, 0, 0],
+                  [0, 0, 1, 0]],
+                 dtype=np.float64)
+    P_T = P.T
+    Nt = update_feature_index.shape[0]
+    H = np.zeros((4 * Nt, 3 * Mt), dtype=np.float64)  # Ht+1 ∈ R^{4Nt×3M}
+    for j in prange(Nt):
+        current_index = update_feature_index[j]
+        H_ij = M @ projection_derivative(cam_T_world @ mu[:, j])@ cam_T_world @ P_T  # ∈ R^{4×3}
+        H[j * 4:(j + 1) * 4, current_index * 3:(current_index + 1) * 3] = H_ij
+    return H
+
+
+def get_kalman_gain():
+    """
+    Calculate Kalman Gain
+    :return:
+    """
+    pass
+
+
+@njit
+def get_predicted_obs(M, cam_T_world, mu):
+    """
+    Predicted observations based on µt
+    :param M: 4x4 stereo camera calibration matrix
+    :param cam_T_world: 4x4 transformation matrix {W} -> {CAM}
+    :param mu: landmarks_mu_t
+    :return: z_pred
+    """
+    return M @ projection(cam_T_world @ mu)
+
+
+@njit
+def velocity_std(vt: np.ndarray):
+    """
+    Calculate the std of linear and angular velocity
+    :param vt: 3x3026
+    :type:numpy array
+    :param wt: 3x3026
+    :type:numpy array
+    :return:
+    """
+    vt_x, vt_y, vt_z = vt[0, :], vt[1, :], vt[2, :]
+    vt_x_sigma = np.std(vt_x)
+    vt_y_sigma = np.std(vt_y)
+    vt_z_sigma = np.std(vt_z)
+    return vt_x_sigma, vt_y_sigma, vt_z_sigma
+
+
+@njit
 def pixel2world(pixels: np.ndarray, K: np.ndarray, b: float, world_T_cam: np.ndarray) -> np.ndarray:
     """
     Convert from pixels to world coordinates
@@ -158,7 +220,7 @@ def pixel2world(pixels: np.ndarray, K: np.ndarray, b: float, world_T_cam: np.nda
     cu = K[0, 2]  # principal point [pixels]
     cv = K[1, 2]  # principal point [pixels]
     m_o = np.ones((4, pixels.shape[1]))
-    m_o[2, :] = fs_u*b / (pixels[0, :] - pixels[2, :])
+    m_o[2, :] = fs_u * b / (pixels[0, :] - pixels[2, :])
     m_o[1, :] = (pixels[1, :] - cv) / fs_v * m_o[2, :]
     m_o[0, :] = (pixels[0, :] - cu) / fs_u * m_o[2, :]
     # Transform from pixel to world frame in in homogenous coordinates
@@ -224,6 +286,13 @@ if __name__ == '__main__':
     t, features, linear_velocity, angular_velocity, K, b, imu_T_cam = load_data(filename, load_features=True)
     print(f"features: {features.shape}")
     del filename
+    num_timestamps = t.shape[1]
+    num_landmarks = features.shape[1]  # M
+    # velocity
+    vt_x_sigma, vt_y_sigma, vt_z_sigma = velocity_std(linear_velocity)
+    wt_r_sigma, wt_p_sigma, wt_y_sigma = velocity_std(angular_velocity)
+    cov_diag = np.array([vt_x_sigma, vt_y_sigma, vt_z_sigma, wt_r_sigma, wt_p_sigma, wt_y_sigma],
+                        dtype=np.float64) ** 2
     # CAM Param
     fs_u = K[0, 0]  # focal length [m],  pixel scaling [pixels/m]
     fs_v = K[1, 1]  # focal length [m],  pixel scaling [pixels/m]
@@ -232,10 +301,11 @@ if __name__ == '__main__':
     b = float(b)  # stereo baseline [m]
     # Stereo camera intrinsic calibration matrix M
     M = get_M(fs_u, fs_v, cu, cv, b)
-
     # transformation O_T_I from the IMU to camera optical frame (extrinsic param)
     cam_T_imu = np.linalg.inv(imu_T_cam)
     if VERBOSE:
+        print(f"vt_sigma: {vt_x_sigma, vt_y_sigma, vt_z_sigma}")
+        print(f"wt_sigma: {wt_r_sigma, wt_p_sigma, wt_y_sigma}")
         print(f"K: {K.shape}\n{K}\n")
         print(f"M: {M.shape}\n{M}\n")
         print(f"imu_T_cam: {imu_T_cam.shape}\n{imu_T_cam}\n")
@@ -243,14 +313,19 @@ if __name__ == '__main__':
     toc(start_load, name="Loading Data")
     ###################################################################################################################
     '''Init pose_trajectory '''
-    pose_trajectory = np.zeros((4, 4, np.size(t)), dtype=np.float64)
+    pose_trajectory = np.zeros((4, 4, num_timestamps), dtype=np.float64)
     # At t = 0, R=eye(3) p =zeros(3)
     T_imu_mu_t = np.eye(4)
-    imu_sigma_t = np.eye(6)
+    imu_sigma_t = np.diag(cov_diag)
     pose_trajectory[:, :, 0] = T_imu_mu_t
-
-    '''Dead Reckoning'''
-    for i in tqdm(range(1, np.size(t))):
+    '''Init landmarks '''
+    landmarks_mu_t = -1 * np.ones((4, num_landmarks))  # µt ∈ R^{3M} with homogenous coord
+    landmarks_sigma_t = np.eye(3 * num_landmarks)  # Σt ∈ R^{3M×3M}
+    ###################################################################################################################
+    '''Debug Var'''
+    idx = set()
+    ###################################################################################################################
+    for i in tqdm(range(1, num_timestamps)):
         tau = t[0, i] - t[0, i - 1]
         # Generalized velocity:[vt wt].T 6x1
         u_t = np.vstack((linear_velocity[:, i].reshape(3, 1),
@@ -269,26 +344,45 @@ if __name__ == '__main__':
 
         # Valid observed features at time t
         features_t = features[:, :, i]
-        feature_index = np.where(np.sum(features_t, axis=1) != -4)  # type tuple
-        update_feature_index = np.empty(0, dtype=np.int16)
-        update_feature = np.empty((4, 0))
+        feature_index = np.array(np.where(np.sum(features_t, axis=0) != -4))
+        update_feature_index = np.empty(0, dtype=np.int64)
+        update_feature = np.empty((4, 0), dtype=np.float64)
 
-        if np.size(feature_index) != 0:
-            observed_features_pixels = features_t[:, feature_index].reshape(-1, np.size(feature_index))
-            m_o_ = pixel2world(observed_features_pixels, K, b, world_T_cam)
+        # landmarks are observed
+        num_obs = feature_index.size
+        if num_obs != 0:
+            '''Observation model
+            z = h(T_t, mj)+vt(noise)     Tt:= W_T_I,t       vt ∼ N (0, I ⊗ V) = diag[V...V]  
+            1. send mj from {w} to {C}
+                world_T_cam = world_T_imu @ imu_T_cam
+                m_o_ = o_T_imu @ inv(T_t) mj_ -- implemented
+            2. proj m_o_ into image plane
+                m_i_ = π(m_o)
+            3. Apply intrinsic M
+            z_i = M π(m_o_j) + vt(noise)
+            '''
+            # Extract observed_features_pixels
+            observed_features_pixels = features_t[:, feature_index].reshape(-1, num_obs)
+            # Transform pixels to world frame in homogenous coord
+            m_world_ = pixel2world(observed_features_pixels, K, b, world_T_cam)
+            for j in range(num_obs):
+                current_index = feature_index[0, j]
+                # if first seen, initialize landmark
+                if np.array_equal(landmarks_mu_t[:, current_index], [-1, -1, -1, -1]):
+                    landmarks_mu_t[:, current_index] = m_world_[:, j]
+                # else update landmark position
+                else:
+                    update_feature_index = np.append(update_feature_index, current_index)
+                    update_feature = np.hstack((update_feature, m_world_[:, j].reshape(4, 1)))
+            # if update_feature is not empty
+            if update_feature_index.shape[0] != 0:
+                mu_t_j = landmarks_mu_t[:, update_feature_index].reshape(4, -1)
+                H = get_obs_model_Jacobian(M, cam_T_world, num_landmarks, update_feature_index, mu_t_j)
+                z = features_t[:, update_feature_index].reshape((4, -1))
+                z_pred = get_predicted_obs(M, cam_T_world, mu_t_j)
 
     # visualize_trajectory_2d(pose_trajectory, show_ori=True)
     ###########################################################################################################
-    '''Observation model
-    z = h(T_t, mj)+vt(noise)     Tt:= W_T_I,t       vt ∼ N (0, I ⊗ V) = diag[V...V]  
-    1. send mj from {w} to {C}
-        world_T_cam = world_T_imu @ imu_T_cam
-        m_o_ = o_T_imu @ inv(T_t) mj_
-    2. proj m_o_ into image plane
-        m_i_ = π(m_o)
-    3. Apply intrinsic M
-    z_i = M π(m_o_j) + vt(noise)
-    '''
 
     ###################################################################################################################
     # (a) IMU Localization via EKF Prediction
