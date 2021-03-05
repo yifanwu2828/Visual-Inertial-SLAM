@@ -168,19 +168,21 @@ def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu) -> np.n
     return H
 
 
-def get_mapping_kalman_gain(sigma, H, Nt):
+def get_mapping_kalman_gain(sigma, H, Nt, v=5):
     """
     Calculate Kalman Gain
     :return:
     """
+    # V symmetric, sigma symmetric
+    # H_sigma @ H.T symmetric
+    # H_sigma @ H.T+ V symmetric -> S.T = S
+    V = np.kron(np.eye(4 * Nt), v)
+    H_sigma = H @ sigma
+    S = H_sigma @ H.T + V
+    S_T = S
 
-    # innovation cov
-    # S = H @ sigma @ H.T + np.eye(4*Nt) #*V
-    V = 5
-    H_T=H.T
-    K = sigma @ H_T @ np.linalg.inv(H @ sigma @ H_T + np.eye(4 * Nt) * V)
-
-    return K
+    K_T, _, _, _ = np.linalg.lstsq(S_T, H_sigma, rcond=None)
+    return K_T.T
 
 
 def get_predicted_obs(M, cam_T_world, mu):
@@ -199,8 +201,6 @@ def velocity_std(vt: np.ndarray):
     """
     Calculate the std of linear and angular velocity
     :param vt: 3x3026
-    :type:numpy array
-    :param wt: 3x3026
     :type:numpy array
     :return:
     """
@@ -364,7 +364,7 @@ if __name__ == '__main__':
 
         # Valid observed features at time t
         features_t = features[:, :, i]
-        feature_index = tuple(np.where(np.sum(features_t, axis=0) != -4)[0])
+        feature_index = tuple(np.where(np.sum(features_t, axis=0) > -4)[0])
         update_feature_index = []
         update_feature = np.empty((4, 0), dtype=np.float64)
 
@@ -393,10 +393,18 @@ if __name__ == '__main__':
                 mu_t_j = reg2homo(landmarks_mu_t[:, update_feature_index])
                 # print(f"{Nt},({4 * Nt},{num_landmarks})")
                 H = get_obs_model_Jacobian(M, cam_T_world, num_landmarks, update_feature_index, mu_t_j)
-                assert H.shape[0]== 4*Nt
-                z = features_t[:, update_feature_index]
-                z_pred = get_predicted_obs(M, cam_T_world, mu_t_j)
-                K = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt)
+                assert H.shape[0] == 4 * Nt
+
+                z = features_t[:, update_feature_index].reshape(-1, 1,)
+                z_pred = get_predicted_obs(M, cam_T_world, mu_t_j).reshape(-1, 1,)
+
+                try:
+                    K_map = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt)
+                    landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ (z - z_pred)
+                    landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
+                    # landmarks_sigma_t = (np.eye(3*num_landmarks)- K@H)@landmarks_sigma_t
+                except:
+                    continue
         #         print("\n")
         #         print("Nt",Nt)
         #         print("z",z_pred.shape)
@@ -404,8 +412,8 @@ if __name__ == '__main__':
         #         print("K",K.shape)
         #         print("mu",landmarks_mu_t.shape)
         #         print("sigma",landmarks_sigma_t.shape)
-        #         landmarks_mu_t = landmarks_mu_t + K@ (z-z_pred)
-
+    plt.scatter(landmarks_mu_t[0,:], landmarks_mu_t[1,:])
+    plt.show()
     # visualize_trajectory_2d(pose_trajectory, show_ori=True)
     ###########################################################################################################
 
