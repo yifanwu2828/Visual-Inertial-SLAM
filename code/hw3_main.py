@@ -5,6 +5,13 @@ from numba import njit, prange
 from utils import *
 
 
+def show_map(pose, landmarks):
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.plot(pose[0, 3, :], pose[1, 3, :], 'r-', label="pose_trajectory", linewidth=9)
+    ax.plot(landmarks[0, :], landmarks[1, :], 'bo', markersize=1, label="landmark", linewidth=1)
+    plt.show()
+
+
 def skew2vec(x_hat: np.ndarray) -> np.ndarray:
     """
     hat map so3 to vector
@@ -272,6 +279,18 @@ def main():
     z_i = M π(m_o_j) + vt(noise)
     '''
     ############################
+    '''test Kalman Gain '''
+    Nt = 10
+    m = 2
+    sigma = np.eye(3 * 2)
+    H = np.ones((4 * Nt, 3 * m))
+    k = get_mapping_kalman_gain(sigma, H, Nt, v=5)
+
+    V = np.kron(np.eye(4 * Nt), 5)
+    k1 = sigma @ H.T @ np.linalg.inv(H @ sigma @ H.T + V)
+    print(np.allclose(k, k1))
+    assert abs(np.sum(k-k1)) < 1e-4
+    ############################
     pass
 
 
@@ -360,7 +379,7 @@ if __name__ == '__main__':
         # world frame to cam frame
         cam_T_world = cam_T_imu @ imu_T_world
         # cam frame to world  frame
-        world_T_cam = np.linalg.inv(cam_T_world)
+        world_T_cam = T_imu_mu_t @ imu_T_cam
 
         # Valid observed features at time t
         features_t = features[:, :, i]
@@ -376,39 +395,48 @@ if __name__ == '__main__':
             # Transform pixels to world frame in homogenous coord
             m_world_ = pixel2world(observed_features_pixels, K, b, world_T_cam)
             assert observed_features_pixels.size == m_world_.size
+            assert m_world_.shape[0]==4
 
             for j in range(num_obs):
                 current_index = feature_index[j]
-                # if first seen, initialize landmark
+                # if first time seen, initialize landmark
                 if np.array_equal(obs_mu_t[:, current_index], np.array([-1, -1, -1, -1])):
                     obs_mu_t[:, current_index] = observed_features_pixels[:, j]
                     landmarks_mu_t[:, current_index] = np.delete(m_world_[:, j], 3, axis=0)
-                # else update landmark position
+                    assert landmarks_mu_t.shape[0] ==3
+
+                # else update landmark position,
+                # transform the world frame position to camera frame, and calculate re-projection error
                 else:
                     update_feature_index.append(current_index)
                     update_feature = np.hstack((update_feature, m_world_[:, j].reshape(4, 1)))
+
             # if update_feature is not empty
             Nt = len(update_feature_index)
             if Nt != 0:
                 mu_t_j = reg2homo(landmarks_mu_t[:, update_feature_index])
+                assert mu_t_j.shape[0] == 4
+                # plt.scatter(mu_t_j[0,:], mu_t_j[1,:])
                 # print(f"{Nt},({4 * Nt},{num_landmarks})")
                 H = get_obs_model_Jacobian(M, cam_T_world, num_landmarks, update_feature_index, mu_t_j)
                 assert H.shape[0] == 4 * Nt
+            #
+            #     z = features_t[:, update_feature_index].reshape(-1, 1,)
+            #     z_pred = get_predicted_obs(M, cam_T_world, mu_t_j).reshape(-1, 1,)
+            #
+            #     try:
+            #         K_map = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt)
+            #         landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ (z - z_pred)
+            #         landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
+            #         landmarks_sigma_t = (np.eye(3*num_landmarks) - K@H)@landmarks_sigma_t
+            #     except:
+            #         idx.add(i)
+            #         pass
 
-                z = features_t[:, update_feature_index].reshape(-1, 1,)
-                z_pred = get_predicted_obs(M, cam_T_world, mu_t_j).reshape(-1, 1,)
+    # landmarks_pos = np.delete(landmarks_mu_t, 2, axis=0)
+    # visualize_trajectory_2d(pose_trajectory, landmark=landmarks_pos, show_ori=True)
+    show_map(pose_trajectory, landmarks_mu_t)
 
-                try:
-                    K_map = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt)
-                    landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ (z - z_pred)
-                    landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
-                    landmarks_sigma_t = (np.eye(3*num_landmarks) - K@H)@landmarks_sigma_t
-                except:
-                    idx.add(i)
-                    pass
-
-
-    visualize_trajectory_2d(pose_trajectory, landmarks_mu_t, show_ori=True)
     ###########################################################################################################
 
     ###################################################################################################################
@@ -420,3 +448,4 @@ if __name__ == '__main__':
 
     # You can use the function below to visualize the robot pose over time
     # visualize_trajectory_2d(world_T_imu, show_ori=True)
+
