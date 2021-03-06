@@ -97,8 +97,6 @@ def projection_derivative(q: np.ndarray) -> np.ndarray:
     :param q: numpy.array
     return: dπ(q)/dq 4x4
     """
-    if q[2]==0:
-        q[2]=1e-8
     dpi_dq = np.eye(4)
     dpi_dq[2, 2] = 0.0
     dpi_dq[0, 2] = -q[0] / q[2]
@@ -146,11 +144,11 @@ def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu) -> np.n
     Nt = len(update_feature_index)
     H = np.zeros((4 * Nt, 3 * Mt), dtype=np.float64)  # Ht+1 ∈ R^{4Nt×3M}
     for j in range(Nt):
-        current_index = update_feature_index[j]
+        index = update_feature_index[j]
         # 4x4 4x4(4x4@4xNt) @4x4
         dpi_dq = projection_derivative(cam_T_world @ mu[:, j])
         H_ij = M @ dpi_dq @ cam_T_world @ P_T  # H_ij∈ R^{4×3}
-        H[j * 4:(j + 1) * 4, current_index * 3:(current_index + 1) * 3] = H_ij
+        H[j * 4:(j + 1) * 4, index * 3:(index + 1) * 3] = H_ij
     return H
 
 
@@ -182,7 +180,6 @@ def get_predicted_obs(M, cam_T_world, mu):
     return M @ projection(cam_T_world @ mu)
 
 
-@njit
 def update_obs_sigma(sigma, K, H_sigma):
     """
     EKF update sigma
@@ -280,7 +277,6 @@ def main():
     V = np.kron(np.eye(4 * Nt), 5)
     k1 = sigma @ H.T @ np.linalg.inv(H @ sigma @ H.T + V)
     print(np.allclose(k, k1))
-    assert abs(np.sum(k - k1)) < 1e-4
     ############################
     pass
 
@@ -313,11 +309,11 @@ if __name__ == '__main__':
     t, features, linear_velocity, angular_velocity, K, b, imu_T_cam = load_data(filename, load_features=True)
     print(f"features: {features.shape}")
 
-    # select half of features
-    percent = 3
+    # select subset of features
+    percent = 10
     lst = [i for i in range(0, features.shape[1]) if not i % percent == 0]
-    print(lst)
     features = np.delete(features, lst, axis=1)
+    print(f"percent={percent}: {lst}")
     print(f"features_subset: {features.shape}")
 
     num_timestamps = features.shape[2]
@@ -325,8 +321,8 @@ if __name__ == '__main__':
     # velocity
     vt_x_sigma, vt_y_sigma, vt_z_sigma = velocity_std(linear_velocity)
     wt_r_sigma, wt_p_sigma, wt_y_sigma = velocity_std(angular_velocity)
-    cov_diag = np.array([vt_x_sigma, vt_y_sigma, vt_z_sigma, wt_r_sigma, wt_p_sigma, wt_y_sigma],
-                        dtype=np.float64) ** 2
+    cov_diag = np.diag(np.array([vt_x_sigma, vt_y_sigma, vt_z_sigma, wt_r_sigma, wt_p_sigma, wt_y_sigma],
+                                dtype=np.float64) ** 2)
     # CAM Param
     fs_u = K[0, 0]  # focal length [m],  pixel scaling [pixels/m]
     fs_v = K[1, 1]  # focal length [m],  pixel scaling [pixels/m]
@@ -353,13 +349,13 @@ if __name__ == '__main__':
     '''Init pose_trajectory '''
     pose_trajectory = np.zeros((4, 4, num_timestamps), dtype=np.float64)
     # At t = 0, R=eye(3) p =zeros(3)
-    T_imu_mu_t = np.eye(4)
-    imu_sigma_t = np.diag(cov_diag)
+    T_imu_mu_t = np.eye(4)  # ∈ R^{4×4}
+    T_imu_sigma_t = np.eye(6)  # ∈ R^{6×6}
     pose_trajectory[:, :, 0] = T_imu_mu_t
+
     '''Init landmarks '''
     landmarks_mu_t = np.zeros((3, num_landmarks), dtype=np.float64)  # µt ∈ R^{3M} with homogenous coord
     landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
-    identity = np.eye(3*num_landmarks)
     obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float64)
     ###################################################################################################################
     '''Debug Var'''
@@ -367,21 +363,29 @@ if __name__ == '__main__':
     ##################################################################################################################
     for i in tqdm(range(1, num_timestamps)):
         tau = t[0, i] - t[0, i - 1]
+        # (a) IMU Localization via EKF Prediction
         # Generalized velocity:[vt wt].T 6x1
         u_t = np.vstack((linear_velocity[:, i].reshape(3, 1),
                          angular_velocity[:, i].reshape(3, 1)))  # u(t) \in R^{6}
         u_t_hat = vec2twist_hat(u_t)  # ξ^ \in R^{4x4}
         u_t_adj = vec2twist_adj(u_t)  # ξ` \in R^{6x6}
+
         # Discrete-time Pose Kinematics:
         T_imu_mu_t = T_imu_mu_t @ linalg.expm(tau * u_t_hat)
         imu_T_world = np.linalg.inv(T_imu_mu_t)
-        pose_trajectory[:, :, i] = T_imu_mu_t
 
+        perturbation = linalg.expm(-tau * u_t_adj)
+        W = np.random.multivariate_normal(mean=[0, 0, 0, 0, 0, 0], cov=cov_diag)
+        T_imu_sigma_t = perturbation @ T_imu_sigma_t @ perturbation.T + W
+
+        pose_trajectory[:, :, i] = T_imu_mu_t
+        # TODO:  imu_sigma EKF Update Step
+        ###############################################################################################################
+        # (c) Landmark Mapping via EKF Update
         # world frame to cam frame
         cam_T_world = cam_T_imu @ imu_T_world
         # cam frame to world  frame
         world_T_cam = T_imu_mu_t @ imu_T_cam
-
         # Valid observed features at time t
         features_t = features[:, :, i]
         feature_index = tuple(np.where(np.sum(features_t, axis=0) > -4)[0])
@@ -404,40 +408,28 @@ if __name__ == '__main__':
                     landmarks_mu_t[:, current_index] = np.delete(m_world_[:, j], 3, axis=0)
 
                 # else update landmark position,
-                # transform the world frame position to camera frame, and calculate re-projection error
+                # transform {W} -> {CAM}, and calculate re-projection error
                 else:
                     update_feature_index.append(current_index)
                     update_feature = np.hstack((update_feature, m_world_[:, j].reshape(4, 1)))
 
             # if update_feature is not empty
             Nt = len(update_feature_index)
-            if Nt != 0:  # and False:
+            if Nt != 0: #and False:
+                # To homogenous coordinate
                 mu_t_j = reg2homo(landmarks_mu_t[:, update_feature_index])
-                # plt.scatter(mu_t_j[0,:], mu_t_j[1,:])
-                # print(f"{Nt},({4 * Nt},{num_landmarks})")
+                # Calculate Jacobian
                 H = get_obs_model_Jacobian(M, cam_T_world, num_landmarks, update_feature_index, mu_t_j)
-
-                z = features_t[:, update_feature_index].reshape(-1, 1,)
-                z_pred = get_predicted_obs(M, cam_T_world, mu_t_j).reshape(-1, 1,)
-
-                K_map, H_sigma = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt, v=5000)
-                landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ (z - z_pred)
+                z = features_t[:, update_feature_index]
+                z_pred = get_predicted_obs(M, cam_T_world, mu_t_j)
+                K_map, H_sigma = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt, v=500)
+                landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ (z - z_pred).reshape(-1, 1,)
                 landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
-
                 landmarks_sigma_t = update_obs_sigma(landmarks_sigma_t, K_map, H_sigma)
 
-    visualize_trajectory_2d(pose_trajectory, show_ori=True)
-    show_map(pose_trajectory, landmarks_mu_t)
+    # visualize_trajectory_2d(pose_trajectory, show_ori=True)
+    # show_map(pose_trajectory, landmarks_mu_t)
 
     ###########################################################################################################
 
-    ###################################################################################################################
-    # (a) IMU Localization via EKF Prediction
-
-    # (c) Landmark Mapping via EKF Update
-
     # (d) Visual-Inertial SLAM
-
-    # You can use the function below to visualize the robot pose over time
-    # visualize_trajectory_2d(world_T_imu, show_ori=True)
-
