@@ -83,11 +83,7 @@ def projection(q: np.ndarray) -> np.ndarray:
     π(q) := 1/q3 @ q  ∈ R^{4}
     :param q: numpy.array
     """
-    # Prevent Divide by zero error
-    q3 = q[2]
-    if q3==0:
-        q3=1e-8
-    pi_q = q / q3
+    pi_q = q / q[2, :]
     return pi_q
 
 
@@ -97,7 +93,7 @@ def projection_derivative(q: np.ndarray) -> np.ndarray:
     Projection Function Derivative
     calculate dπ(q)/dq
     :param q: numpy.array
-    return: dπ(q)/dq
+    return: dπ(q)/dq 4x4
     """
     if q[2]==0:
         q[2]=1e-8
@@ -156,7 +152,7 @@ def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu) -> np.n
     return H
 
 
-def get_mapping_kalman_gain(sigma, H, Nt, v=5):
+def get_mapping_kalman_gain(sigma, H, Nt, v=1):
     """
     Calculate Kalman Gain
     :return:
@@ -302,8 +298,14 @@ if __name__ == '__main__':
     filename = "./data/10.npz"
     t, features, linear_velocity, angular_velocity, K, b, imu_T_cam = load_data(filename, load_features=True)
     print(f"features: {features.shape}")
-    del filename
-    num_timestamps = t.shape[1]
+
+    # select half of features
+    lst = [i for i in range(0, features.shape[1]) if not i % 3 == 0]
+    lst.insert(0, 0)
+    features = np.delete(features, lst, axis=1)
+    print(f"features_subset: {features.shape}")
+
+    num_timestamps = features.shape[2]
     num_landmarks = features.shape[1]  # M
     # velocity
     vt_x_sigma, vt_y_sigma, vt_z_sigma = velocity_std(linear_velocity)
@@ -327,6 +329,7 @@ if __name__ == '__main__':
         print(f"M: {M.shape}\n{M}\n")
         print(f"imu_T_cam: {imu_T_cam.shape}\n{imu_T_cam}\n")
         print(f"cam_T_imu: {cam_T_imu.shape}\n{cam_T_imu}")
+    del filename
     del fs_u, fs_v, cu, cv
     del vt_x_sigma, vt_y_sigma, vt_z_sigma
     del wt_r_sigma, wt_p_sigma, wt_y_sigma
@@ -341,12 +344,12 @@ if __name__ == '__main__':
     '''Init landmarks '''
     landmarks_mu_t = np.zeros((3, num_landmarks), dtype=np.float64)  # µt ∈ R^{3M} with homogenous coord
     landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
-
+    identity = np.eye(3*num_landmarks)
     obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float64)
     ###################################################################################################################
     '''Debug Var'''
     idx = set()
-    ###################################################################################################################
+    ##################################################################################################################
     for i in tqdm(range(1, num_timestamps)):
         tau = t[0, i] - t[0, i - 1]
         # Generalized velocity:[vt wt].T 6x1
@@ -401,20 +404,15 @@ if __name__ == '__main__':
 
                 z = features_t[:, update_feature_index].reshape(-1, 1,)
                 z_pred = get_predicted_obs(M, cam_T_world, mu_t_j).reshape(-1, 1,)
-                # Innovation:
-                error= z - z_pred
-                # try:
-                #     # tested K_map
-                #     K_map = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt)
-                #     landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ (z - z_pred)
-                #     landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
-                #     # landmarks_sigma_t = (np.eye(3*num_landmarks) - K@H)@landmarks_sigma_t
-                # except:
-                #     idx.add(i)
-                #     pass
 
+                K_map = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt)
+                landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ (z - z_pred)
+                landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
+                a =K_map@H
+                print(a.shape)
+                # landmarks_sigma_t = (identity - K_map@H)@landmarks_sigma_t
     # landmarks_pos = np.delete(landmarks_mu_t, 2, axis=0)
-    # visualize_trajectory_2d(pose_trajectory, landmark=landmarks_pos, show_ori=True)
+    visualize_trajectory_2d(pose_trajectory, show_ori=True)
     show_map(pose_trajectory, landmarks_mu_t)
 
     ###########################################################################################################
@@ -428,3 +426,4 @@ if __name__ == '__main__':
 
     # You can use the function below to visualize the robot pose over time
     # visualize_trajectory_2d(world_T_imu, show_ori=True)
+
