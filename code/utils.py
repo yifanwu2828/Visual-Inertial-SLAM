@@ -68,11 +68,10 @@ def visualize_trajectory_2d(pose, landmark=None, path_name="Unknown", show_ori=F
     """
     fig, ax = plt.subplots(figsize=(5, 5))
     n_pose = pose.shape[2]
-    ax.plot(pose[0, 3, :], pose[1, 3, :], 'r-', label=path_name)
-    ax.scatter(pose[0, 3, 0], pose[1, 3, 0], marker='s', label="start")
-    ax.scatter(pose[0, 3, -1], pose[1, 3, -1], marker='o', label="end")
-    if landmark:
-        ax.scatter(landmark[0, :], landmark[1, :], 'bo', markersize=1, label="landmark")
+    ax.plot(pose[0, 3, :], pose[1, 3, :], 'r-', label=path_name, linewidth=11)
+    ax.scatter(pose[0, 3, 0], pose[1, 3, 0], marker='s', label="start", linewidths=15)
+    ax.scatter(pose[0, 3, -1], pose[1, 3, -1], marker='o', label="end", linewidths=15)
+    ax.plot(landmark[0, :], landmark[1, :], 'bo', markersize=1, label="landmark",)
     if show_ori:
         select_ori_index = list(range(0, n_pose, max(int(n_pose / 50), 1)))
         yaw_list = []
@@ -93,5 +92,6 @@ def visualize_trajectory_2d(pose, landmark=None, path_name="Unknown", show_ori=F
     ax.grid(False)
     ax.legend()
     plt.show(block=True)
+
 
     return fig, ax
