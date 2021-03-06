@@ -300,7 +300,8 @@ if __name__ == '__main__':
     print(f"features: {features.shape}")
 
     # select half of features
-    lst = [i for i in range(0, features.shape[1]) if not i % 3 == 0]
+    percent = 10
+    lst = [i for i in range(0, features.shape[1]) if not i % percent == 0]
     lst.insert(0, 0)
     features = np.delete(features, lst, axis=1)
     print(f"features_subset: {features.shape}")
@@ -408,9 +409,7 @@ if __name__ == '__main__':
                 K_map = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt)
                 landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ (z - z_pred)
                 landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
-                a =K_map@H
-                print(a.shape)
-                # landmarks_sigma_t = (identity - K_map@H)@landmarks_sigma_t
+                landmarks_sigma_t = (identity - K_map@H)@landmarks_sigma_t
     # landmarks_pos = np.delete(landmarks_mu_t, 2, axis=0)
     visualize_trajectory_2d(pose_trajectory, show_ori=True)
     show_map(pose_trajectory, landmarks_mu_t)
