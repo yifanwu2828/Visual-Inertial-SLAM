@@ -9,6 +9,8 @@ def show_map(pose, landmarks):
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.plot(pose[0, 3, :], pose[1, 3, :], 'r-', label="pose_trajectory", linewidth=9)
     ax.plot(landmarks[0, :], landmarks[1, :], 'bo', markersize=1, label="landmark", linewidth=1)
+    ax.set_xlim([-1200, 500])
+    ax.set_ylim([-900, 900])
     plt.show()
 
 
@@ -166,7 +168,7 @@ def get_mapping_kalman_gain(sigma, H, Nt, v=1):
     S_T = S
 
     K_T, _, _, _ = np.linalg.lstsq(S_T, H_sigma, rcond=None)
-    return K_T.T
+    return K_T.T, H_sigma
 
 
 def get_predicted_obs(M, cam_T_world, mu):
@@ -178,6 +180,18 @@ def get_predicted_obs(M, cam_T_world, mu):
     :return: z_pred
     """
     return M @ projection(cam_T_world @ mu)
+
+
+@njit
+def update_obs_sigma(sigma, K, H_sigma):
+    """
+    EKF update sigma
+    :param sigma:
+    :param K: Kalman gain
+    :param H_sigma: Jacobian @ sigma
+    :return:
+    """
+    return sigma - K @ H_sigma
 
 
 @njit
@@ -300,9 +314,9 @@ if __name__ == '__main__':
     print(f"features: {features.shape}")
 
     # select half of features
-    percent = 10
+    percent = 3
     lst = [i for i in range(0, features.shape[1]) if not i % percent == 0]
-    lst.insert(0, 0)
+    print(lst)
     features = np.delete(features, lst, axis=1)
     print(f"features_subset: {features.shape}")
 
@@ -397,7 +411,7 @@ if __name__ == '__main__':
 
             # if update_feature is not empty
             Nt = len(update_feature_index)
-            if Nt != 0:
+            if Nt != 0:  # and False:
                 mu_t_j = reg2homo(landmarks_mu_t[:, update_feature_index])
                 # plt.scatter(mu_t_j[0,:], mu_t_j[1,:])
                 # print(f"{Nt},({4 * Nt},{num_landmarks})")
@@ -406,11 +420,12 @@ if __name__ == '__main__':
                 z = features_t[:, update_feature_index].reshape(-1, 1,)
                 z_pred = get_predicted_obs(M, cam_T_world, mu_t_j).reshape(-1, 1,)
 
-                K_map = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt)
+                K_map, H_sigma = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt, v=5000)
                 landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ (z - z_pred)
                 landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
-                landmarks_sigma_t = (identity - K_map@H)@landmarks_sigma_t
-    # landmarks_pos = np.delete(landmarks_mu_t, 2, axis=0)
+
+                landmarks_sigma_t = update_obs_sigma(landmarks_sigma_t, K_map, H_sigma)
+
     visualize_trajectory_2d(pose_trajectory, show_ori=True)
     show_map(pose_trajectory, landmarks_mu_t)
 
