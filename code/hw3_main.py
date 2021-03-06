@@ -1,6 +1,6 @@
 from scipy import linalg
 from tqdm import tqdm
-from numba import njit, prange
+from numba import njit
 
 from utils import *
 
@@ -71,33 +71,9 @@ def reg2homo(X: np.ndarray) -> np.ndarray:
     return X_ -> [[X]
                   [1]]
     """
-    # assert isinstance(X, np.ndarray)
     ones = np.ones((1, X.shape[1]), dtype=np.float64)
     X_ = np.concatenate((X, ones), axis=0)
     return X_
-
-
-def get_T(Rot: np.ndarray, pos: np.ndarray) -> np.ndarray:
-    """
-    Calculate Rigid Body Pose
-    :param: R: rotation matrix
-    :type: 3x3 numpy array
-    :param: p: translation matrix
-    :type: (3,) numpy array
-    :return: pose T [R P
-                     0.T 1 ]
-    """
-    assert isinstance(Rot, np.ndarray)
-    assert isinstance(pos, np.ndarray)
-    assert np.size(Rot) == 9
-    assert pos.ndim == 1
-    x, y, z = pos
-    T = np.array([[0, 0, 0, x],
-                  [0, 0, 0, y],
-                  [0, 0, 0, z],
-                  [0, 0, 0, 1]])
-    T[0:3, 0:3] = Rot
-    return T
 
 
 @njit
@@ -107,9 +83,10 @@ def projection(q: np.ndarray) -> np.ndarray:
     π(q) := 1/q3 @ q  ∈ R^{4}
     :param q: numpy.array
     """
-    # assert isinstance(q, np.ndarray)
     # Prevent Divide by zero error
-    q3 = q[2] + 1e-9
+    q3 = q[2]
+    if q3==0:
+        q3=1e-8
     pi_q = q / q3
     return pi_q
 
@@ -122,6 +99,8 @@ def projection_derivative(q: np.ndarray) -> np.ndarray:
     :param q: numpy.array
     return: dπ(q)/dq
     """
+    if q[2]==0:
+        q[2]=1e-8
     dpi_dq = np.eye(4)
     dpi_dq[2, 2] = 0.0
     dpi_dq[0, 2] = -q[0] / q[2]
@@ -132,7 +111,7 @@ def projection_derivative(q: np.ndarray) -> np.ndarray:
 
 
 @njit
-def get_M(fs_u: float, fs_v: float, cu: float, cv: float, b: float) -> np.ndarray:
+def get_M(fsu: float, fsv: float, cu: float, cv: float, b: float) -> np.ndarray:
     """
     Stereo Camera Calibration Matrix
     :param: fs_u: focal length [m],  pixel scaling [pixels/m]
@@ -142,10 +121,10 @@ def get_M(fs_u: float, fs_v: float, cu: float, cv: float, b: float) -> np.ndarra
     :param: b: stereo baseline [m]
     :return 4x4 stereo camera calibration matrix
     """
-    M = np.array([[fs_u, 0, cu, 0],
-                  [0, fs_v, cv, 0],
-                  [fs_u, 0, cu, -fs_u * b],
-                  [0, fs_v, cv, 0]],
+    M = np.array([[fsu, 0, cu, 0],
+                  [0, fsv, cv, 0],
+                  [fsu, 0, cu, -fsu * b],
+                  [0, fsv, cv, 0]],
                  dtype=np.float64)
     return M
 
@@ -160,17 +139,19 @@ def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu) -> np.n
     :param mu: landmarks_mu_t
     :return: H_{t+1}
     """
-    # Projection Matrix
-    P = np.array([[1, 0, 0, 0],
-                  [0, 1, 0, 0],
-                  [0, 0, 1, 0]],
-                 dtype=np.float64)
-    P_T = P.T
+    # Transpose of Projection Matrix
+    P_T = np.array([[1, 0, 0],
+                    [0, 1, 0],
+                    [0, 0, 1],
+                    [0, 0, 0]],
+                   dtype=np.float64)
     Nt = len(update_feature_index)
     H = np.zeros((4 * Nt, 3 * Mt), dtype=np.float64)  # Ht+1 ∈ R^{4Nt×3M}
-    for j in prange(Nt):
+    for j in range(Nt):
         current_index = update_feature_index[j]
-        H_ij = M @ projection_derivative(cam_T_world @ mu[:, j]) @ cam_T_world @ P_T  # ∈ R^{4×3}
+        # 4x4 4x4(4x4@4xNt) @4x4
+        dpi_dq = projection_derivative(cam_T_world @ mu[:, j])
+        H_ij = M @ dpi_dq @ cam_T_world @ P_T  # H_ij∈ R^{4×3}
         H[j * 4:(j + 1) * 4, current_index * 3:(current_index + 1) * 3] = H_ij
     return H
 
@@ -211,11 +192,11 @@ def velocity_std(vt: np.ndarray):
     :type:numpy array
     :return:
     """
-    vt_x, vt_y, vt_z = vt[0, :], vt[1, :], vt[2, :]
-    vt_x_sigma = np.std(vt_x)
-    vt_y_sigma = np.std(vt_y)
-    vt_z_sigma = np.std(vt_z)
-    return vt_x_sigma, vt_y_sigma, vt_z_sigma
+    v_x, v_y, v_z = vt[0, :], vt[1, :], vt[2, :]
+    v_x_sigma = np.std(v_x)
+    v_y_sigma = np.std(v_y)
+    v_z_sigma = np.std(v_z)
+    return v_x_sigma, v_y_sigma, v_z_sigma
 
 
 @njit
@@ -289,7 +270,7 @@ def main():
     V = np.kron(np.eye(4 * Nt), 5)
     k1 = sigma @ H.T @ np.linalg.inv(H @ sigma @ H.T + V)
     print(np.allclose(k, k1))
-    assert abs(np.sum(k-k1)) < 1e-4
+    assert abs(np.sum(k - k1)) < 1e-4
     ############################
     pass
 
@@ -337,9 +318,8 @@ if __name__ == '__main__':
     b = float(b)  # stereo baseline [m]
     # Stereo camera intrinsic calibration matrix M
     M = get_M(fs_u, fs_v, cu, cv, b)
-    del fs_u, fs_v, cu, cv
     # transformation O_T_I from the IMU to camera optical frame (extrinsic param)
-    cam_T_imu = linalg.inv(imu_T_cam)
+    cam_T_imu = np.linalg.inv(imu_T_cam)
     if VERBOSE:
         print(f"vt_sigma: {vt_x_sigma, vt_y_sigma, vt_z_sigma}")
         print(f"wt_sigma: {wt_r_sigma, wt_p_sigma, wt_y_sigma}")
@@ -347,6 +327,9 @@ if __name__ == '__main__':
         print(f"M: {M.shape}\n{M}\n")
         print(f"imu_T_cam: {imu_T_cam.shape}\n{imu_T_cam}\n")
         print(f"cam_T_imu: {cam_T_imu.shape}\n{cam_T_imu}")
+    del fs_u, fs_v, cu, cv
+    del vt_x_sigma, vt_y_sigma, vt_z_sigma
+    del wt_r_sigma, wt_p_sigma, wt_y_sigma
     toc(start_load, name="Loading Data")
     ###################################################################################################################
     '''Init pose_trajectory '''
@@ -394,8 +377,6 @@ if __name__ == '__main__':
             observed_features_pixels = features_t[:, feature_index]
             # Transform pixels to world frame in homogenous coord
             m_world_ = pixel2world(observed_features_pixels, K, b, world_T_cam)
-            assert observed_features_pixels.size == m_world_.size
-            assert m_world_.shape[0]==4
 
             for j in range(num_obs):
                 current_index = feature_index[j]
@@ -403,7 +384,6 @@ if __name__ == '__main__':
                 if np.array_equal(obs_mu_t[:, current_index], np.array([-1, -1, -1, -1])):
                     obs_mu_t[:, current_index] = observed_features_pixels[:, j]
                     landmarks_mu_t[:, current_index] = np.delete(m_world_[:, j], 3, axis=0)
-                    assert landmarks_mu_t.shape[0] ==3
 
                 # else update landmark position,
                 # transform the world frame position to camera frame, and calculate re-projection error
@@ -415,23 +395,23 @@ if __name__ == '__main__':
             Nt = len(update_feature_index)
             if Nt != 0:
                 mu_t_j = reg2homo(landmarks_mu_t[:, update_feature_index])
-                assert mu_t_j.shape[0] == 4
                 # plt.scatter(mu_t_j[0,:], mu_t_j[1,:])
                 # print(f"{Nt},({4 * Nt},{num_landmarks})")
                 H = get_obs_model_Jacobian(M, cam_T_world, num_landmarks, update_feature_index, mu_t_j)
-                assert H.shape[0] == 4 * Nt
-            #
-            #     z = features_t[:, update_feature_index].reshape(-1, 1,)
-            #     z_pred = get_predicted_obs(M, cam_T_world, mu_t_j).reshape(-1, 1,)
-            #
-            #     try:
-            #         K_map = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt)
-            #         landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ (z - z_pred)
-            #         landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
-            #         landmarks_sigma_t = (np.eye(3*num_landmarks) - K@H)@landmarks_sigma_t
-            #     except:
-            #         idx.add(i)
-            #         pass
+
+                z = features_t[:, update_feature_index].reshape(-1, 1,)
+                z_pred = get_predicted_obs(M, cam_T_world, mu_t_j).reshape(-1, 1,)
+                # Innovation:
+                error= z - z_pred
+                # try:
+                #     # tested K_map
+                #     K_map = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt)
+                #     landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ (z - z_pred)
+                #     landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
+                #     # landmarks_sigma_t = (np.eye(3*num_landmarks) - K@H)@landmarks_sigma_t
+                # except:
+                #     idx.add(i)
+                #     pass
 
     # landmarks_pos = np.delete(landmarks_mu_t, 2, axis=0)
     # visualize_trajectory_2d(pose_trajectory, landmark=landmarks_pos, show_ori=True)
@@ -448,4 +428,3 @@ if __name__ == '__main__':
 
     # You can use the function below to visualize the robot pose over time
     # visualize_trajectory_2d(world_T_imu, show_ori=True)
-
