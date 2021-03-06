@@ -280,9 +280,9 @@ if __name__ == '__main__':
     VERBOSE = False
     '''
     data 1. this data has features, use this if you plan to skip the extra credit feature detection and tracking part
-    t: time stamp 
+    t: time stamp
                 with shape 1*t
-    features: visual feature point coordinates in stereo images, 
+    features: visual feature point coordinates in stereo images,
                 with shape 4*n*t, where n is number of features
                 (4, 13289, 3026)
                 (pixels, landmarks, timestamps)
@@ -402,19 +402,13 @@ if __name__ == '__main__':
                     K_map = get_mapping_kalman_gain(landmarks_sigma_t, H, Nt)
                     landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ (z - z_pred)
                     landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
-                    # landmarks_sigma_t = (np.eye(3*num_landmarks)- K@H)@landmarks_sigma_t
+                    landmarks_sigma_t = (np.eye(3*num_landmarks) - K@H)@landmarks_sigma_t
                 except:
-                    continue
-        #         print("\n")
-        #         print("Nt",Nt)
-        #         print("z",z_pred.shape)
-        #         print("H",H.shape)
-        #         print("K",K.shape)
-        #         print("mu",landmarks_mu_t.shape)
-        #         print("sigma",landmarks_sigma_t.shape)
-    plt.scatter(landmarks_mu_t[0,:], landmarks_mu_t[1,:])
-    plt.show()
-    # visualize_trajectory_2d(pose_trajectory, show_ori=True)
+                    idx.add(i)
+                    pass
+
+
+    visualize_trajectory_2d(pose_trajectory, landmarks_mu_t, show_ori=True)
     ###########################################################################################################
 
     ###################################################################################################################
