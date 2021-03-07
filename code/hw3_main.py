@@ -1,6 +1,6 @@
 from scipy import linalg
 from tqdm import tqdm
-from numba import njit
+from numba import jit, njit
 
 from utils import *
 
@@ -14,6 +14,7 @@ def show_map(pose, landmarks):
     plt.show()
 
 
+@jit
 def skew2vec(x_hat: np.ndarray) -> np.ndarray:
     """
     hat map so3 to vector
@@ -164,7 +165,6 @@ def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu, Nt=None
         index = update_feature_index[j]
         dpi_dq = projection_derivative(cam_T_world @ mu[:, j])
         # H_ij = M @ dpi_dq @ cam_T_world @ P_T  # H_ij∈ R^{4×3}
-        # Automatically selecting the fastest evaluation order.
         H_ij = np.linalg.multi_dot([M, dpi_dq, cam_T_world, P_T])  # H_ij∈ R^{4×3}
         H[j * 4:(j + 1) * 4, index * 3:(index + 1) * 3] = H_ij
     return H
@@ -196,7 +196,7 @@ def get_update_Jacobian(M, cam_T_imu, T_imu_inv, Mt, update_feature_index, m, Nt
     if cam_T_world is None:
         cam_T_world = cam_T_imu @ T_imu_inv
 
-    H = np.zeros((4 * Nt, 3*Mt+6), dtype=np.float64)  # Ht+1 ∈{4Ntx6}
+    H = np.zeros((4 * Nt, 3 * Mt + 6), dtype=np.float64)  # Ht+1 ∈{4Ntx6}
     for j in range(Nt):
         # index = update_feature_index[j]
         mu_inv_mj = T_imu_inv @ m[:, j]
@@ -232,6 +232,7 @@ def get_kalman_gain(sigma, H, Nt, lsq=False, v=100):
     return K_T.T, H_sigma
 
 
+@jit
 def get_predicted_obs(M, cam_T_world, mu):
     """
     Predicted observations based on µt
@@ -293,54 +294,6 @@ def pixel2world(pixels: np.ndarray, K: np.ndarray, b: float, world_T_cam: np.nda
 
 
 def main():
-    """
-        data 2. this data does NOT have features, you need to do feature detection and tracking but will receive extra
-        credit filename = "./data/03.npz"
-        t,features,linear_velocity,angular_velocity,K,b,imu_T_cam = load_data(filename)
-    """
-    ############################
-    '''test pi'''
-    print("'''test pi'''")
-    q = np.array([1, 2, 3, 1])
-    pi_q = projection(q)
-    dq = projection_derivative(q)
-    print(q.shape)  # (4,)
-    print(q)
-    print(pi_q.shape)  # (4,)
-    print(pi_q)
-    print(dq.shape)  # (4,4)
-    print(dq)
-    ############################
-    ''' vec2hat test '''
-    print("''' vec2hat test '''")
-    x = np.array([1, 2, 3])
-    x_hat = vec2skew(x)
-    print(x)
-    print(x_hat.shape)
-    print(x_hat)
-    ############################
-    '''Observation model
-    z = h(T_t, mj)+vt(noise)     Tt:= W_T_I,t       vt ∼ N (0, I ⊗ V) = diag[V...V]
-    1. send mj from {w} to {C}
-        world_T_cam = world_T_imu @ imu_T_cam
-        m_o_ = o_T_imu @ inv(T_t) mj_ -- implemented
-    2. proj m_o_ into image plane
-        m_i_ = π(m_o)
-    3. Apply intrinsic M
-    z_i = M π(m_o_j) + vt(noise)
-    '''
-    ############################
-    '''test Kalman Gain '''
-    Nt = 10
-    m = 2
-    sigma = np.eye(3 * 2)
-    H = np.ones((4 * Nt, 3 * m))
-    k = get_kalman_gain(sigma, H, Nt, v=5)
-
-    V = np.kron(np.eye(4 * Nt), 5)
-    k1 = sigma @ H.T @ np.linalg.inv(H @ sigma @ H.T + V)
-    print(np.allclose(k, k1))
-    ############################
     pass
 
 
@@ -349,22 +302,6 @@ if __name__ == '__main__':
     VERBOSE = False
     '''
     data 1. this data has features, use this if you plan to skip the extra credit feature detection and tracking part
-    t: time stamp
-                with shape 1*t
-    features: visual feature point coordinates in stereo images,
-                with shape 4*n*t, where n is number of features
-                (4, 13289, 3026)
-                (pixels, landmarks, timestamps)
-    linear_velocity: velocity measurements in IMU frame
-                with shape 3*t
-    angular_velocity: angular velocity measurements in IMU frame
-                with shape 3*t
-    K: (left)camera intrinsic matrix
-                with shape 3*3
-    b: stereo camera baseline
-                with shape 1
-    imu_T_cam: extrinsic matrix from (left)camera to imu, in SE(3).
-                with shape 4*4
     '''
     ###################################################################################################################
     start_load = tic("########## Loading Data 1 ##########")
@@ -375,15 +312,13 @@ if __name__ == '__main__':
     num_original_features = features.shape[1]
 
     # select subset of features
-    percent = 50  # 10
-    lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if not skip_feature_idx % percent == 0]
+    factor = 40  # 10
+    lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if not skip_feature_idx % factor == 0]
     features = np.delete(features, lst, axis=1)
-    print(f"Select {int(10 / percent)} per 10 features: \n{lst}")
+    print(f"Select {int(10 / factor)} per 10 features: \n{lst}")
     print(f"Using{features.shape[1] / num_original_features: .2%} to cover entire trajectory")
     print(f"features_subset: {features.shape}")
 
-    num_timestamps = features.shape[2]
-    num_landmarks = features.shape[1]  # M
     # velocity
     vt_x_sigma, vt_y_sigma, vt_z_sigma = velocity_std(linear_velocity)
     wt_r_sigma, wt_p_sigma, wt_y_sigma = velocity_std(angular_velocity)
@@ -413,18 +348,6 @@ if __name__ == '__main__':
     del wt_r_sigma, wt_p_sigma, wt_y_sigma
     toc(start_load, name="Loading Data")
     ###################################################################################################################
-    '''Init pose_trajectory '''
-    pose_trajectory = np.empty((4, 4, num_timestamps), dtype=np.float64)
-    # At t = 0, R=eye(3) p =zeros(3)
-    T_imu_mu_t = np.eye(4)  # ∈ R^{4×4}
-    T_imu_sigma_t = np.eye(6)  # ∈ R^{6×6}
-    pose_trajectory[:, :, 0] = T_imu_mu_t
-
-    '''Init landmarks '''
-    landmarks_mu_t = np.zeros((3, num_landmarks), dtype=np.float64)  # µt ∈ R^{3M} with homogenous coord
-    landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
-    obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float64)
-    ###################################################################################################################
     '''Init Var'''
     # Transpose of Projection Matrix
     P_T = np.array([[1, 0, 0],
@@ -433,8 +356,26 @@ if __name__ == '__main__':
                     [0, 0, 0]],
                    dtype=np.float64)
     # indicator
-    unobserved = np.array([-1, -1, -1, -1])
+    unobserved = np.array([-1, -1, -1, -1], dtype=np.int8)
+    num_timestamps = features.shape[2]
+    num_landmarks = features.shape[1]  # M
     ##################################################################################################################
+    '''Init pose_trajectory '''
+    pose_trajectory = np.empty((4, 4, num_timestamps), dtype=np.float64)
+    # At t = 0, R=eye(3) p =zeros(3)
+    T_imu_mu_t = np.eye(4)  # ∈ R^{4×4}
+    T_imu_sigma_t = np.eye(6)  # ∈ R^{6×6}
+    pose_trajectory[:, :, 0] = T_imu_mu_t
+    '''Init landmarks '''
+    landmarks_mu_t = np.zeros((3, num_landmarks), dtype=np.float64)  # µt ∈ R^{3M} with homogenous coord
+    landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
+    obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float64)
+    '''Init combined mean and covariance matrix'''
+    # mu = np.block([])
+    sigma = np.block([[T_imu_sigma_t, np.zeros((6, 3 * num_landmarks))],
+                      [np.zeros((3 * num_landmarks, 6)), landmarks_sigma_t]])
+    ###################################################################################################################
+    pass
     for i in tqdm(range(1, num_timestamps)):
         tau = t[i] - t[i - 1]
         # (a) IMU Localization via EKF Prediction
@@ -460,7 +401,6 @@ if __name__ == '__main__':
         # (c) Landmark Mapping via EKF Update
         # world frame to cam frame
         cam_T_world = cam_T_imu @ imu_T_world
-        # cam frame to world  frame
         world_T_cam = T_imu_mu_t @ imu_T_cam
         # Valid observed features at time t
         features_t = features[:, :, i]
@@ -468,7 +408,7 @@ if __name__ == '__main__':
         update_feature_index = []
         update_feature = np.empty((4, 0), dtype=np.float64)
 
-        # landmarks are observed
+        # if landmarks are observed
         num_obs = len(feature_index)
         if num_obs != 0:
             # Extract observed_features_pixels
@@ -497,12 +437,12 @@ if __name__ == '__main__':
                 z = features_t[:, update_feature_index]
                 z_pred = get_predicted_obs(M, cam_T_world, mu_t_j)
                 error = (z - z_pred).reshape(-1, 1)
-
                 # TODO: single mu, sigma, H
                 # H_imu = get_update_Jacobian(M, cam_T_imu, imu_T_world, num_landmarks, update_feature_index, mu_t_j,
                 #                             Nt, cam_T_world, P_T)
 
-                H_map = get_obs_model_Jacobian(M, cam_T_world, num_landmarks, update_feature_index, mu_t_j, Nt, P_T)
+                H_map = get_obs_model_Jacobian(M, cam_T_world, num_landmarks, np.array(update_feature_index), mu_t_j,
+                                               Nt, P_T)
 
                 # Update landmarks_mu, landmarks_sigma and T_imu_mu and T_imu_sigma simultaneously
                 '''pose update'''
