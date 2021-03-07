@@ -53,7 +53,7 @@ def vec2twist_hat(x: np.ndarray) -> np.ndarray:
                      [np.zeros((1, 4))]])
 
 
-def vec2twist_adj(x: np.ndarray)-> np.ndarray:
+def vec2twist_adj(x: np.ndarray) -> np.ndarray:
     """
     vector to twist ad(se3)
     :param x: 6x1
@@ -72,7 +72,7 @@ def circle_dot(s: np.ndarray) -> np.ndarray:
     """
     s = s.reshape(-1)
     assert s.size == 4
-    assert abs(s[-1]- 1) < 1e-8
+    assert abs(s[-1] - 1) < 1e-8
     return np.block([[np.eye(3), -vec2skew(s[:3])], [np.zeros((1, 6))]])
 
 
@@ -137,27 +137,31 @@ def get_M(fsu: float, fsv: float, cu: float, cv: float, b: float) -> np.ndarray:
     return M
 
 
-def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu) -> np.ndarray:
+def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu, Nt=None, P_T=None) -> np.ndarray:
     """
     Observation Model Jacobian H_{t+1} ∈ R^{4Nt×3M}
     :param M: 4x4 stereo camera calibration matrix
     :param cam_T_world: 4x4 transformation matrix {W} -> {CAM}
-    :param Mt:total_number_of_landmarks: 132896
-    :param update_feature_index:
-    :param mu: landmarks_mu_t
+    :param Mt: number_of_landmarks
+    :param update_feature_index: index of update features
+    :param mu: landmarks_mu_t: mean of landmarks position in world frame
+    :param Nt: number of update features
+    :param P_T: Transpose of Projection Matrix
     :return: H_{t+1}
     """
     # Transpose of Projection Matrix
-    P_T = np.array([[1, 0, 0],
-                    [0, 1, 0],
-                    [0, 0, 1],
-                    [0, 0, 0]],
-                   dtype=np.float64)
-    Nt = len(update_feature_index)
+    if P_T is None:
+        P_T = np.array([[1, 0, 0],
+                        [0, 1, 0],
+                        [0, 0, 1],
+                        [0, 0, 0]],
+                       dtype=np.float64)
+    if Nt is None:
+        Nt = len(update_feature_index)
+
     H = np.zeros((4 * Nt, 3 * Mt), dtype=np.float64)  # Ht+1 ∈ R^{4Nt×3M}
     for j in range(Nt):
         index = update_feature_index[j]
-        # 4x4 4x4(4x4@4xNt) @4x4
         dpi_dq = projection_derivative(cam_T_world @ mu[:, j])
         # H_ij = M @ dpi_dq @ cam_T_world @ P_T  # H_ij∈ R^{4×3}
         # Automatically selecting the fastest evaluation order.
@@ -166,16 +170,33 @@ def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu) -> np.n
     return H
 
 
-def get_motion_model_Jacobian(M, cam_T_imu, Nt, T_imu_inv, m):
+def get_update_Jacobian(M, cam_T_imu, T_imu_inv, Mt, update_feature_index, m, Nt=None, cam_T_world=None, P_T=None):
     """
-    Motion Model Jacobian H_{t+1} ∈ R^{}
+
     :param M: 4x4 stereo camera calibration matrix
-    :param cam_T_imu: transformation from imu to cam
-    :param T_imu_inv: imu_T_world
-    :param m: observation in {w}
+    :param cam_T_imu: 4x4 transformation matrix {IMU} -> {CAM}
+    :param T_imu_inv: 4x4 transformation matrix {W} -> {IMU}
+    :param Mt: number_of_landmarks
+    :param update_feature_index: index of update features
+    :param m: landmarks position in world frame
+    :param Nt: number of update features
+    :param cam_T_world: 4x4 transformation matrix {W} -> {CAM}
+    :param P_T: Transpose of Projection Matrix
     :return:
     """
-    H = np.empty((4 * Nt, 6), dtype=np.float64)  # Ht+1 ∈{4Ntx6}
+    if P_T is None:
+        P_T = np.array([[1, 0, 0],
+                        [0, 1, 0],
+                        [0, 0, 1],
+                        [0, 0, 0]],
+                       dtype=np.float64)
+    if Nt is None:
+        Nt = len(update_feature_index)
+
+    if cam_T_world is None:
+        cam_T_world = cam_T_imu @ T_imu_inv
+
+    H = np.zeros((4 * Nt, 3*Mt+6), dtype=np.float64)  # Ht+1 ∈{4Ntx6}
     for j in range(Nt):
         # index = update_feature_index[j]
         mu_inv_mj = T_imu_inv @ m[:, j]
@@ -207,7 +228,7 @@ def get_kalman_gain(sigma, H, Nt, lsq=False, v=100):
     if lsq:
         K_T, _, _, _ = np.linalg.lstsq(S_T, H_sigma, rcond=None)
     else:
-        K_T= np.linalg.solve(S_T, H_sigma)
+        K_T = np.linalg.solve(S_T, H_sigma)
     return K_T.T, H_sigma
 
 
@@ -355,10 +376,10 @@ if __name__ == '__main__':
 
     # select subset of features
     percent = 50  # 10
-    lst = [i for i in range(0, features.shape[1]) if not i % percent == 0]
+    lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if not skip_feature_idx % percent == 0]
     features = np.delete(features, lst, axis=1)
-    print(f"Select {int(10/percent)} per 10 features: \n{lst}")
-    print(f"Using{features.shape[1]/num_original_features: .2%} to cover entire trajectory")
+    print(f"Select {int(10 / percent)} per 10 features: \n{lst}")
+    print(f"Using{features.shape[1] / num_original_features: .2%} to cover entire trajectory")
     print(f"features_subset: {features.shape}")
 
     num_timestamps = features.shape[2]
@@ -366,8 +387,9 @@ if __name__ == '__main__':
     # velocity
     vt_x_sigma, vt_y_sigma, vt_z_sigma = velocity_std(linear_velocity)
     wt_r_sigma, wt_p_sigma, wt_y_sigma = velocity_std(angular_velocity)
-    cov_diag = np.diag(np.array([vt_x_sigma, vt_y_sigma, vt_z_sigma, wt_r_sigma, wt_p_sigma, wt_y_sigma],
-                                dtype=np.float64) ** 2)
+    cov_vec = np.array([vt_x_sigma, vt_y_sigma, vt_z_sigma, wt_r_sigma, wt_p_sigma, wt_y_sigma],
+                       dtype=np.float64) ** 2
+    cov_diag = np.diag(cov_vec)
     # CAM Param
     fs_u = K[0, 0]  # focal length [m],  pixel scaling [pixels/m]
     fs_v = K[1, 1]  # focal length [m],  pixel scaling [pixels/m]
@@ -385,14 +407,14 @@ if __name__ == '__main__':
         print(f"M: {M.shape}\n{M}\n")
         print(f"imu_T_cam: {imu_T_cam.shape}\n{imu_T_cam}\n")
         print(f"cam_T_imu: {cam_T_imu.shape}\n{cam_T_imu}")
-    del filename, num_original_features
+    del filename, num_original_features, VERBOSE
     del fs_u, fs_v, cu, cv
     del vt_x_sigma, vt_y_sigma, vt_z_sigma
     del wt_r_sigma, wt_p_sigma, wt_y_sigma
     toc(start_load, name="Loading Data")
     ###################################################################################################################
     '''Init pose_trajectory '''
-    pose_trajectory = np.zeros((4, 4, num_timestamps), dtype=np.float64)
+    pose_trajectory = np.empty((4, 4, num_timestamps), dtype=np.float64)
     # At t = 0, R=eye(3) p =zeros(3)
     T_imu_mu_t = np.eye(4)  # ∈ R^{4×4}
     T_imu_sigma_t = np.eye(6)  # ∈ R^{6×6}
@@ -403,8 +425,15 @@ if __name__ == '__main__':
     landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
     obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float64)
     ###################################################################################################################
-    '''Debug Var'''
-    idx = set()
+    '''Init Var'''
+    # Transpose of Projection Matrix
+    P_T = np.array([[1, 0, 0],
+                    [0, 1, 0],
+                    [0, 0, 1],
+                    [0, 0, 0]],
+                   dtype=np.float64)
+    # indicator
+    unobserved = np.array([-1, -1, -1, -1])
     ##################################################################################################################
     for i in tqdm(range(1, num_timestamps)):
         tau = t[i] - t[i - 1]
@@ -420,12 +449,13 @@ if __name__ == '__main__':
         imu_T_world = np.linalg.inv(T_imu_mu_t)
 
         perturbation = linalg.expm(-tau * u_t_adj)
-        # W = np.random.multivariate_normal(mean=[0, 0, 0, 0, 0, 0], cov=cov_diag)
-
-        T_imu_sigma_t = perturbation @ T_imu_sigma_t @ perturbation.T #+ W
+        # T_imu_sigma_t = perturbation @ T_imu_sigma_t @ perturbation.T #+ W
+        W = np.random.multivariate_normal(mean=[0, 0, 0, 0, 0, 0], cov=cov_diag).reshape(-1, 1)
+        noise_adj = vec2twist_adj(W)
+        noise_pertu = linalg.expm(tau ** 2 * noise_adj)
+        T_imu_sigma_t = np.linalg.multi_dot([noise_pertu, perturbation, T_imu_sigma_t, perturbation.T, noise_pertu.T])
 
         pose_trajectory[:, :, i] = T_imu_mu_t
-        # TODO:  imu_sigma EKF Update Step
         ###############################################################################################################
         # (c) Landmark Mapping via EKF Update
         # world frame to cam frame
@@ -449,7 +479,7 @@ if __name__ == '__main__':
             for j in range(num_obs):
                 current_index = feature_index[j]
                 # if first time seen, initialize landmarks
-                if np.array_equal(obs_mu_t[:, current_index], np.array([-1, -1, -1, -1])):
+                if np.array_equal(obs_mu_t[:, current_index], unobserved):
                     obs_mu_t[:, current_index] = observed_features_pixels[:, j]
                     landmarks_mu_t[:, current_index] = np.delete(m_world_[:, j], 3, axis=0)
 
@@ -460,7 +490,7 @@ if __name__ == '__main__':
 
             # if update_feature is not empty
             Nt = len(update_feature_index)
-            if Nt != 0: #and False:
+            if Nt != 0:  # and False:
                 # To homogenous coordinate
                 mu_t_j = reg2homo(landmarks_mu_t[:, update_feature_index])
                 # Re-projection Error
@@ -468,23 +498,19 @@ if __name__ == '__main__':
                 z_pred = get_predicted_obs(M, cam_T_world, mu_t_j)
                 error = (z - z_pred).reshape(-1, 1)
 
-                # TODO: H_imu, K_imu, update_imu_mu, update_imu_sigma
-                H_imu = get_motion_model_Jacobian(M, cam_T_imu, Nt, imu_T_world, mu_t_j)
-                print(Nt)
-                # print(H_imu.shape)
-                assert H_imu.shape[0] == 4*Nt
-                K_imu, H_imu_sigma = get_kalman_gain(T_imu_sigma_t, H_imu, Nt, lsq=False, v=500)
-                #print(K_imu.shape)
-                assert K_imu.size==6*4*Nt
-                T_hat = vec2twist_hat(K_imu @ error)
-                T_imu_mu_t = T_imu_mu_t @ linalg.expm(T_hat)
-                T_imu_sigma_t = update_sigma(T_imu_sigma_t, K_imu, H_imu_sigma)
-                # print(T_imu_sigma_t.shape)
-                assert T_imu_sigma_t.size == 36
+                # TODO: single mu, sigma, H
+                # H_imu = get_update_Jacobian(M, cam_T_imu, imu_T_world, num_landmarks, update_feature_index, mu_t_j,
+                #                             Nt, cam_T_world, P_T)
 
+                H_map = get_obs_model_Jacobian(M, cam_T_world, num_landmarks, update_feature_index, mu_t_j, Nt, P_T)
 
-                # Update landmarks_mu and landmarks_sigma
-                H_map = get_obs_model_Jacobian(M, cam_T_world, num_landmarks, update_feature_index, mu_t_j)
+                # Update landmarks_mu, landmarks_sigma and T_imu_mu and T_imu_sigma simultaneously
+                '''pose update'''
+                # K_imu, H_imu_sigma = get_kalman_gain(T_imu_sigma_t, H_imu, Nt, lsq=False, v=500)
+                # T_twist_hat = vec2twist_hat(K_imu @ error)
+                # T_imu_mu_t = T_imu_mu_t @ linalg.expm(T_twist_hat)
+                # T_imu_sigma_t = update_sigma(T_imu_sigma_t, K_imu, H_imu_sigma)
+                '''landmarks update'''
                 K_map, H_landmarks_sigma = get_kalman_gain(landmarks_sigma_t, H_map, Nt, lsq=True, v=500)
                 landmarks_mu_t = (landmarks_mu_t.reshape(-1, 1) + K_map @ error).reshape(3, -1)
                 landmarks_sigma_t = update_sigma(landmarks_sigma_t, K_map, H_landmarks_sigma)
