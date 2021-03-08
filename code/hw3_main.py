@@ -290,9 +290,6 @@ def main():
 if __name__ == '__main__':
     np.seterr(all='raise')
     VERBOSE = False
-    '''
-    data 1. this data has features, use this if you plan to skip the extra credit feature detection and tracking part
-    '''
     ###################################################################################################################
     start_load = tic("########## Loading Data 1 ##########")
     filename = "./data/10.npz"
@@ -302,8 +299,9 @@ if __name__ == '__main__':
     num_original_features = features.shape[1]
 
     # select subset of features
-    factor = 20  # 10
+    factor = 3  # 10
     lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if not skip_feature_idx % factor == 0]
+    print(lst)
     features_subset = np.delete(features, lst, axis=1)
     print(f"Using{features_subset.shape[1] / num_original_features: .2%} to cover entire trajectory")
     print(f"features_subset: {features_subset.shape}")
@@ -331,10 +329,10 @@ if __name__ == '__main__':
         print(f"M: {M.shape}\n{M}\n")
         print(f"imu_T_cam: {imu_T_cam.shape}\n{imu_T_cam}\n")
         print(f"cam_T_imu: {cam_T_imu.shape}\n{cam_T_imu}")
-    del filename, num_original_features, VERBOSE
+    del filename, num_original_features, VERBOSE, features, lst
     del fs_u, fs_v, cu, cv
     del vt_x_sigma, vt_y_sigma, vt_z_sigma
-    del wt_r_sigma, wt_p_sigma, wt_y_sigma
+    del wt_r_sigma, wt_p_sigma, wt_y_sigma, cov_vec
     toc(start_load, name="Loading Data")
     ###################################################################################################################
     '''Init Var'''
@@ -358,13 +356,13 @@ if __name__ == '__main__':
     '''Init landmarks '''
     landmarks_mu_t = np.zeros((3 * num_landmarks, 1), dtype=np.float64)  # µt ∈ R^{3M}
     landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
-    obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float64)
+    obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.int16)
     '''Init combined mean and covariance matrix'''
-    # mu = np.block([])
+    # mu = np.block([[T_imu_mu_t.reshape(-1,1)], [np.zeros((3 * num_landmarks, 1))]])
     # sigma = np.block([[T_imu_sigma_t, np.zeros((6, 3 * num_landmarks))],
     #                   [np.zeros((3 * num_landmarks, 6)), landmarks_sigma_t]])
     ###################################################################################################################
-    pass
+
     for i in tqdm(range(1, num_timestamps)):
         tau = t[i] - t[i - 1]
         # (a) IMU Localization via EKF Prediction
@@ -379,7 +377,7 @@ if __name__ == '__main__':
         imu_T_world = np.linalg.inv(T_imu_mu_t)
 
         perturbation = linalg.expm(-tau * u_t_adj)
-        # T_imu_sigma_t = np.linalg.multi_dot([perturbation, T_imu_sigma_t, perturbation.T])
+        # add noise
         W = np.random.multivariate_normal(mean=[0, 0, 0, 0, 0, 0], cov=cov_diag).reshape(-1, 1)
         noise_adj = vec2twist_adj(W)
         noise_pertu = linalg.expm(tau ** 2 * noise_adj)
@@ -428,19 +426,19 @@ if __name__ == '__main__':
                 z_pred = M @ projection(cam_T_world @ mu_t_j)
                 error = (z - z_pred).reshape(-1, 1)
                 # TODO: single mu, sigma, H
-                # H_imu = get_motion_model_Jacobian(M, cam_T_imu, imu_T_world, mu_t_j, Nt)
 
-                H_map = get_obs_model_Jacobian(M, cam_T_world, num_landmarks,
-                                               np.array(update_feature_index),
-                                               mu_t_j, Nt, P_T)
 
                 # Update landmarks_mu, landmarks_sigma and T_imu_mu and T_imu_sigma simultaneously
                 '''pose update'''
+                # H_imu = get_motion_model_Jacobian(M, cam_T_imu, imu_T_world, mu_t_j, Nt)
                 # K_imu, H_imu_sigma = get_kalman_gain(T_imu_sigma_t, H_imu, Nt, lsq=True, v=100)
                 # T_twist_hat = vec2twist_hat(K_imu @ error)
                 # T_imu_mu_t = T_imu_mu_t @ linalg.expm(T_twist_hat)
                 # T_imu_sigma_t = T_imu_sigma_t - K_imu @ H_imu_sigma
                 '''landmarks update'''
+                H_map = get_obs_model_Jacobian(M, cam_T_world, num_landmarks,
+                                               np.array(update_feature_index),
+                                               mu_t_j, Nt, P_T)
                 K_map, H_landmarks_sigma = get_kalman_gain(landmarks_sigma_t, H_map, Nt, lsq=True, v=100)
                 landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ error
                 landmarks_sigma_t = landmarks_sigma_t - K_map @ H_landmarks_sigma
