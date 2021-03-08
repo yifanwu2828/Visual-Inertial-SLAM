@@ -9,8 +9,8 @@ def show_map(pose, landmarks):
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.plot(pose[0, 3, :], pose[1, 3, :], 'r-', label="pose_trajectory", linewidth=9)
     ax.plot(landmarks[0, :], landmarks[1, :], 'bo', markersize=1, label="landmark", linewidth=1)
-    ax.set_xlim([-1200, 500])
-    ax.set_ylim([-900, 900])
+    # ax.set_xlim([-1200, 500])
+    ax.set_ylim([-1200, 600])
     plt.show()
 
 
@@ -158,7 +158,7 @@ def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu, Nt=None
                         [0, 0, 0]],
                        dtype=np.float64)
     if Nt is None:
-        Nt = len(update_feature_index)
+        Nt = update_feature_index.size
 
     H = np.zeros((4 * Nt, 3 * Mt), dtype=np.float64)  # Ht+1 ∈ R^{4Nt×3M}
     for j in range(Nt):
@@ -170,9 +170,24 @@ def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu, Nt=None
     return H
 
 
+
+def get_motion_model_Jacobian(M, cam_T_imu, T_imu_inv, m, Nt):
+
+    # H = np.empty((0, 6), dtype=np.float64)  # Ht+1 ∈{4Ntx6}
+    H = np.empty((4*Nt, 6), dtype=np.float64)  # Ht+1 ∈{4Ntx6}
+    for j in range(Nt):
+        prod = T_imu_inv @ m[:, j]
+        dpi_dq = projection_derivative(cam_T_imu @ prod)
+        s_circle_dot = circle_dot(prod)
+        H_ij = np.linalg.multi_dot([-M, dpi_dq, cam_T_imu, s_circle_dot])
+        H[j * 4:(j + 1) * 4, :] = H_ij
+        # H = np.vstack((H, H_ij))
+    return H
+
+
 def get_update_Jacobian(M, cam_T_imu, T_imu_inv, Mt, update_feature_index, m, Nt=None, cam_T_world=None, P_T=None):
     """
-
+    Combined Jacobian
     :param M: 4x4 stereo camera calibration matrix
     :param cam_T_imu: 4x4 transformation matrix {IMU} -> {CAM}
     :param T_imu_inv: 4x4 transformation matrix {W} -> {IMU}
@@ -191,8 +206,7 @@ def get_update_Jacobian(M, cam_T_imu, T_imu_inv, Mt, update_feature_index, m, Nt
                         [0, 0, 0]],
                        dtype=np.float64)
     if Nt is None:
-        Nt = len(update_feature_index)
-
+        Nt = update_feature_index.size
     if cam_T_world is None:
         cam_T_world = cam_T_imu @ T_imu_inv
 
@@ -223,36 +237,12 @@ def get_kalman_gain(sigma, H, Nt, lsq=False, v=100):
     # H_sigma @ H.T+ V symmetric -> S.T = S
     V = np.kron(np.eye(4 * Nt), v)
     H_sigma = H @ sigma
-    S = H_sigma @ H.T + V
-    S_T = S
+    S_T = H_sigma @ H.T + V
     if lsq:
         K_T, _, _, _ = np.linalg.lstsq(S_T, H_sigma, rcond=None)
     else:
         K_T = np.linalg.solve(S_T, H_sigma)
     return K_T.T, H_sigma
-
-
-@jit
-def get_predicted_obs(M, cam_T_world, mu):
-    """
-    Predicted observations based on µt
-    :param M: 4x4 stereo camera calibration matrix
-    :param cam_T_world: 4x4 transformation matrix {W} -> {CAM}
-    :param mu: landmarks_mu_t
-    :return: z_pred
-    """
-    return M @ projection(cam_T_world @ mu)
-
-
-def update_sigma(sigma, K, H_sigma):
-    """
-    EKF update sigma
-    :param sigma:
-    :param K: Kalman gain
-    :param H_sigma: Jacobian @ sigma
-    :return:
-    """
-    return sigma - K @ H_sigma
 
 
 @njit
@@ -312,12 +302,11 @@ if __name__ == '__main__':
     num_original_features = features.shape[1]
 
     # select subset of features
-    factor = 40  # 10
+    factor = 20  # 10
     lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if not skip_feature_idx % factor == 0]
-    features = np.delete(features, lst, axis=1)
-    print(f"Select {int(10 / factor)} per 10 features: \n{lst}")
-    print(f"Using{features.shape[1] / num_original_features: .2%} to cover entire trajectory")
-    print(f"features_subset: {features.shape}")
+    features_subset = np.delete(features, lst, axis=1)
+    print(f"Using{features_subset.shape[1] / num_original_features: .2%} to cover entire trajectory")
+    print(f"features_subset: {features_subset.shape}")
 
     # velocity
     vt_x_sigma, vt_y_sigma, vt_z_sigma = velocity_std(linear_velocity)
@@ -357,8 +346,8 @@ if __name__ == '__main__':
                    dtype=np.float64)
     # indicator
     unobserved = np.array([-1, -1, -1, -1], dtype=np.int8)
-    num_timestamps = features.shape[2]
-    num_landmarks = features.shape[1]  # M
+    num_timestamps = features_subset.shape[2]
+    num_landmarks = features_subset.shape[1]  # M
     ##################################################################################################################
     '''Init pose_trajectory '''
     pose_trajectory = np.empty((4, 4, num_timestamps), dtype=np.float64)
@@ -367,13 +356,13 @@ if __name__ == '__main__':
     T_imu_sigma_t = np.eye(6)  # ∈ R^{6×6}
     pose_trajectory[:, :, 0] = T_imu_mu_t
     '''Init landmarks '''
-    landmarks_mu_t = np.zeros((3, num_landmarks), dtype=np.float64)  # µt ∈ R^{3M} with homogenous coord
+    landmarks_mu_t = np.zeros((3 * num_landmarks, 1), dtype=np.float64)  # µt ∈ R^{3M}
     landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
     obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float64)
     '''Init combined mean and covariance matrix'''
     # mu = np.block([])
-    sigma = np.block([[T_imu_sigma_t, np.zeros((6, 3 * num_landmarks))],
-                      [np.zeros((3 * num_landmarks, 6)), landmarks_sigma_t]])
+    # sigma = np.block([[T_imu_sigma_t, np.zeros((6, 3 * num_landmarks))],
+    #                   [np.zeros((3 * num_landmarks, 6)), landmarks_sigma_t]])
     ###################################################################################################################
     pass
     for i in tqdm(range(1, num_timestamps)):
@@ -390,12 +379,11 @@ if __name__ == '__main__':
         imu_T_world = np.linalg.inv(T_imu_mu_t)
 
         perturbation = linalg.expm(-tau * u_t_adj)
-        # T_imu_sigma_t = perturbation @ T_imu_sigma_t @ perturbation.T #+ W
+        # T_imu_sigma_t = np.linalg.multi_dot([perturbation, T_imu_sigma_t, perturbation.T])
         W = np.random.multivariate_normal(mean=[0, 0, 0, 0, 0, 0], cov=cov_diag).reshape(-1, 1)
         noise_adj = vec2twist_adj(W)
         noise_pertu = linalg.expm(tau ** 2 * noise_adj)
         T_imu_sigma_t = np.linalg.multi_dot([noise_pertu, perturbation, T_imu_sigma_t, perturbation.T, noise_pertu.T])
-
         pose_trajectory[:, :, i] = T_imu_mu_t
         ###############################################################################################################
         # (c) Landmark Mapping via EKF Update
@@ -403,7 +391,7 @@ if __name__ == '__main__':
         cam_T_world = cam_T_imu @ imu_T_world
         world_T_cam = T_imu_mu_t @ imu_T_cam
         # Valid observed features at time t
-        features_t = features[:, :, i]
+        features_t = features_subset[:, :, i]
         feature_index = tuple(np.where(np.sum(features_t, axis=0) > -4)[0])
         update_feature_index = []
         update_feature = np.empty((4, 0), dtype=np.float64)
@@ -421,8 +409,9 @@ if __name__ == '__main__':
                 # if first time seen, initialize landmarks
                 if np.array_equal(obs_mu_t[:, current_index], unobserved):
                     obs_mu_t[:, current_index] = observed_features_pixels[:, j]
+                    landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
                     landmarks_mu_t[:, current_index] = np.delete(m_world_[:, j], 3, axis=0)
-
+                    landmarks_mu_t = landmarks_mu_t.reshape(-1, 1)
                 # else update landmark position,
                 else:
                     update_feature_index.append(current_index)
@@ -432,32 +421,33 @@ if __name__ == '__main__':
             Nt = len(update_feature_index)
             if Nt != 0:  # and False:
                 # To homogenous coordinate
+                landmarks_mu_t = landmarks_mu_t.reshape(3, -1)
                 mu_t_j = reg2homo(landmarks_mu_t[:, update_feature_index])
                 # Re-projection Error
                 z = features_t[:, update_feature_index]
-                z_pred = get_predicted_obs(M, cam_T_world, mu_t_j)
+                z_pred = M @ projection(cam_T_world @ mu_t_j)
                 error = (z - z_pred).reshape(-1, 1)
                 # TODO: single mu, sigma, H
-                # H_imu = get_update_Jacobian(M, cam_T_imu, imu_T_world, num_landmarks, update_feature_index, mu_t_j,
-                #                             Nt, cam_T_world, P_T)
+                # H_imu = get_motion_model_Jacobian(M, cam_T_imu, imu_T_world, mu_t_j, Nt)
 
-                H_map = get_obs_model_Jacobian(M, cam_T_world, num_landmarks, np.array(update_feature_index), mu_t_j,
-                                               Nt, P_T)
+                H_map = get_obs_model_Jacobian(M, cam_T_world, num_landmarks,
+                                               np.array(update_feature_index),
+                                               mu_t_j, Nt, P_T)
 
                 # Update landmarks_mu, landmarks_sigma and T_imu_mu and T_imu_sigma simultaneously
                 '''pose update'''
-                # K_imu, H_imu_sigma = get_kalman_gain(T_imu_sigma_t, H_imu, Nt, lsq=False, v=500)
+                # K_imu, H_imu_sigma = get_kalman_gain(T_imu_sigma_t, H_imu, Nt, lsq=True, v=100)
                 # T_twist_hat = vec2twist_hat(K_imu @ error)
                 # T_imu_mu_t = T_imu_mu_t @ linalg.expm(T_twist_hat)
-                # T_imu_sigma_t = update_sigma(T_imu_sigma_t, K_imu, H_imu_sigma)
+                # T_imu_sigma_t = T_imu_sigma_t - K_imu @ H_imu_sigma
                 '''landmarks update'''
-                K_map, H_landmarks_sigma = get_kalman_gain(landmarks_sigma_t, H_map, Nt, lsq=True, v=500)
-                landmarks_mu_t = (landmarks_mu_t.reshape(-1, 1) + K_map @ error).reshape(3, -1)
-                landmarks_sigma_t = update_sigma(landmarks_sigma_t, K_map, H_landmarks_sigma)
+                K_map, H_landmarks_sigma = get_kalman_gain(landmarks_sigma_t, H_map, Nt, lsq=True, v=100)
+                landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ error
+                landmarks_sigma_t = landmarks_sigma_t - K_map @ H_landmarks_sigma
 
-    visualize_trajectory_2d(pose_trajectory, show_ori=True)
-    show_map(pose_trajectory, landmarks_mu_t)
-
+    landmarks_pos = landmarks_mu_t.reshape(3, -1)
+    visualize_trajectory_2d(pose_trajectory, landmarks_pos, show_points=False, show_ori=True)
+    show_map(pose_trajectory, landmarks_pos)
     ###########################################################################################################
 
     # (d) Visual-Inertial SLAM
