@@ -446,174 +446,173 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
-    # np.seterr(all='raise')
-    # VERBOSE = False
-    # ###################################################################################################################
-    # start_load = tic("########## Loading Data 1 ##########")
-    # filename = "./data/10.npz"
-    # t, features, linear_velocity, angular_velocity, K, b, imu_T_cam = load_data(filename, load_features=True)
-    # t = t.reshape(-1)
-    # print(f"features: {features.shape}")
-    # num_original_features = features.shape[1]
-    #
-    # # select subset of features
-    # factor = 10  # 10
-    # lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if not skip_feature_idx % factor == 0]
-    # print(lst)
-    # features_subset = np.delete(features, lst, axis=1)
-    # print(f"Using{features_subset.shape[1] / num_original_features: .2%} to cover entire trajectory")
-    # print(f"features_subset: {features_subset.shape}")
-    #
-    # # velocity
-    # vt_x_sigma, vt_y_sigma, vt_z_sigma = velocity_std(linear_velocity)
-    # wt_r_sigma, wt_p_sigma, wt_y_sigma = velocity_std(angular_velocity)
-    # cov_vec = np.array([vt_x_sigma, vt_y_sigma, vt_z_sigma, wt_r_sigma, wt_p_sigma, wt_y_sigma],
-    #                    dtype=np.float32) ** 2
-    # cov_diag = np.diag(cov_vec)
-    # # CAM Param
-    # fs_u = K[0, 0]  # focal length [m],  pixel scaling [pixels/m]
-    # fs_v = K[1, 1]  # focal length [m],  pixel scaling [pixels/m]
-    # cu = K[0, 2]  # principal point [pixels]
-    # cv = K[1, 2]  # principal point [pixels]
-    # b = float(b)  # stereo baseline [m]
-    # # Stereo camera intrinsic calibration matrix M
-    # M = get_M(fs_u, fs_v, cu, cv, b)
-    # # transformation O_T_I from the IMU to camera optical frame (extrinsic param)
-    # imu_T_cam = imu_T_cam.astype(np.float32)
-    # cam_T_imu = np.linalg.inv(imu_T_cam)
-    # if VERBOSE:
-    #     print(f"vt_sigma: {vt_x_sigma, vt_y_sigma, vt_z_sigma}")
-    #     print(f"wt_sigma: {wt_r_sigma, wt_p_sigma, wt_y_sigma}")
-    #     print(f"K: {K.shape}\n{K}\n")
-    #     print(f"M: {M.shape}\n{M}\n")
-    #     print(f"imu_T_cam: {imu_T_cam.shape}\n{imu_T_cam}\n")
-    #     print(f"cam_T_imu: {cam_T_imu.shape}\n{cam_T_imu}")
-    # del filename, num_original_features, VERBOSE, features, lst
-    # del fs_u, fs_v, cu, cv
-    # del vt_x_sigma, vt_y_sigma, vt_z_sigma
-    # del wt_r_sigma, wt_p_sigma, wt_y_sigma, cov_vec
-    # toc(start_load, name="Loading Data")
-    # ###################################################################################################################
-    # '''Init Var'''
-    # # Transpose of Projection Matrix
-    # P_T = np.array([[1, 0, 0],
-    #                 [0, 1, 0],
-    #                 [0, 0, 1],
-    #                 [0, 0, 0]],
-    #                dtype=np.float32)
-    # # indicator
-    # unobserved = np.array([-1, -1, -1, -1], dtype=np.int8)
-    # num_timestamps = features_subset.shape[2]
-    # num_landmarks = features_subset.shape[1]  # M
-    # ##################################################################################################################
-    # '''Init pose_trajectory '''
-    # pose_trajectory = np.empty((4, 4, num_timestamps), dtype=np.float32)
-    # # At t = 0, R=eye(3) p =zeros(3)
-    # T_imu_mu_t = np.eye(4, dtype=np.float32)  # ∈ R^{4×4}
-    # T_imu_sigma_t = np.eye(6, dtype=np.float32)  # ∈ R^{6×6}
-    # pose_trajectory[:, :, 0] = T_imu_mu_t
-    # '''Init landmarks '''
-    # landmarks_mu_t = np.zeros((3 * num_landmarks, 1), dtype=np.float32)  # µt ∈ R^{3M}
-    # landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float32)  # Σt ∈ R^{3M×3M}
-    # obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float32)
-    #
-    # '''Init combined mean and covariance matrix'''
-    # mu = np.block([[T_imu_mu_t.reshape(-1, 1)], [landmarks_mu_t]])
-    # del T_imu_mu_t, landmarks_mu_t
-    # sigma = np.block([[T_imu_sigma_t, np.zeros((6, 3 * num_landmarks))],
-    #                  [np.zeros((3 * num_landmarks, 6)), landmarks_sigma_t]])
-    # del T_imu_sigma_t, landmarks_sigma_t
-    # print(mu.shape)
-    # print(sigma.shape)
-    # ###################################################################################################################
-    # for i in tqdm(range(1, num_timestamps)):
-    #     tau = t[i] - t[i - 1]
-    #     # (a) IMU Localization via EKF Prediction
-    #     # Generalized velocity:[vt wt].T 6x1
-    #     u_t = np.vstack((linear_velocity[:, i].reshape(3, 1),
-    #                      angular_velocity[:, i].reshape(3, 1)))  # u(t) \in R^{6}
-    #     u_t_hat = vec2twist_hat(u_t)  # ξ^ \in R^{4x4}
-    #     u_t_adj = vec2twist_adj(u_t)  # ξ` \in R^{6x6}
-    #
-    #     # Discrete-time Pose Kinematics:
-    #     world_T_imu = mu[0:16].reshape(4, -1) @ linalg.expm(tau * u_t_hat)
-    #     mu[0:16] = world_T_imu.reshape(-1, 1)
-    #     imu_T_world = np.linalg.inv(world_T_imu)
-    #
-    #     perturbation = linalg.expm(-tau * u_t_adj)
-    #     # add noise
-    #     W = np.random.multivariate_normal(mean=[0, 0, 0, 0, 0, 0], cov=cov_diag).reshape(-1, 1)
-    #     noise_adj = vec2twist_adj(W)
-    #     noise_pertu = linalg.expm(tau ** 2 * noise_adj)
-    #     # T_imu_sigma_t = sigma[:6, :6]
-    #     sigma[:6, :6] = np.linalg.multi_dot([noise_pertu, perturbation, sigma[:6, :6], perturbation.T, noise_pertu.T])
-    #
-    #     ###############################################################################################################
-    #     # (c) Landmark Mapping via EKF Update
-    #     # world frame to cam frame
-    #     cam_T_world = cam_T_imu @ imu_T_world
-    #     world_T_cam = world_T_imu @ imu_T_cam
-    #     # Valid observed features at time t
-    #     features_t = features_subset[:, :, i]
-    #     feature_index = tuple(np.where(np.sum(features_t, axis=0) > -4)[0])
-    #     update_feature_index = []
-    #     update_feature = np.empty((4, 0), dtype=np.float32)
-    #
-    #     # if landmarks are observed
-    #     num_obs = len(feature_index)
-    #     if num_obs != 0:
-    #         # Extract observed_features_pixels
-    #         observed_features_pixels = features_t[:, feature_index]
-    #         # Transform pixels to world frame in homogenous coord
-    #         m_world_ = pixel2world(observed_features_pixels, K, b, world_T_cam)
-    #
-    #         for j in range(num_obs):
-    #             current_index = feature_index[j]
-    #             # if first time seen, initialize landmarks
-    #             if np.array_equal(obs_mu_t[:, current_index], unobserved):
-    #                 obs_mu_t[:, current_index] = observed_features_pixels[:, j]
-    #
-    #                 landmarks_mu_t = mu[16:].reshape(3, -1)
-    #                 landmarks_mu_t[:, current_index] = np.delete(m_world_[:, j], 3, axis=0)
-    #                 mu[16:] = landmarks_mu_t.reshape(-1, 1)
-    #             # else update landmark position,
-    #             else:
-    #                 update_feature_index.append(current_index)
-    #                 update_feature = np.hstack((update_feature, m_world_[:, j].reshape(4, 1)))
-    #
-    #         # if update_feature is not empty
-    #         Nt = len(update_feature_index)
-    #         if Nt != 0:  # and False:
-    #             # To homogenous coordinate
-    #             landmarks_mu_t = mu[16:].reshape(3, -1)
-    #             mu_t_j = reg2homo(landmarks_mu_t[:, update_feature_index])
-    #             # Re-projection Error
-    #             z = features_t[:, update_feature_index]
-    #             z_pred = M @ projection(cam_T_world @ mu_t_j)
-    #             error = (z - z_pred).reshape(-1, 1)
-    #             # TODO: single mu, sigma, H
-    #             # Update landmarks_mu, landmarks_sigma and T_imu_mu and T_imu_sigma simultaneously
-    #             H = get_update_Jacobian(M, cam_T_imu, imu_T_world, num_landmarks,
-    #                                     update_feature_index, mu_t_j,
-    #                                     Nt=Nt, cam_T_world=cam_T_world, P_T=P_T)
-    #             '''pose update'''
-    #             # H_imu = get_motion_model_Jacobian(M, cam_T_imu, imu_T_world, mu_t_j, Nt)
-    #             # K_imu, H_imu_sigma = get_kalman_gain(T_imu_sigma_t, H_imu, Nt, lsq=True, v=100)
-    #             # T_twist_hat = vec2twist_hat(K_imu @ error)
-    #             # T_imu_mu_t = T_imu_mu_t @ linalg.expm(T_twist_hat)
-    #             # T_imu_sigma_t = T_imu_sigma_t - K_imu @ H_imu_sigma
-    #             '''landmarks update'''
-    #             # H_map = get_obs_model_Jacobian(M, cam_T_world, num_landmarks,
-    #             #                                np.array(update_feature_index),
-    #             #                                mu_t_j, Nt, P_T)
-    #             # K_map, H_landmarks_sigma = get_kalman_gain(landmarks_sigma_t, H_map, Nt, lsq=True, v=100)
-    #             # landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ error
-    #             # landmarks_sigma_t = landmarks_sigma_t - K_map @ H_landmarks_sigma
-    #     # record update pose traj
-    #     pose_trajectory[:, :, i] = mu[0:16].reshape(4, -1)
-    # landmarks_pos = mu[16:].reshape(3, -1)
-    # visualize_trajectory_2d(pose_trajectory, landmarks_pos, show_points=True, show_ori=True)
-    # show_map(pose_trajectory, landmarks_pos)
+    np.seterr(all='raise')
+    VERBOSE = False
+    ###################################################################################################################
+    start_load = tic("########## Loading Data 1 ##########")
+    filename = "./data/10.npz"
+    t, features, linear_velocity, angular_velocity, K, b, imu_T_cam = load_data(filename, load_features=True)
+    t = t.reshape(-1)
+    print(f"features: {features.shape}")
+    num_original_features = features.shape[1]
+
+    # select subset of features
+    factor = 10  # 10
+    lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if not skip_feature_idx % factor == 0]
+    print(lst)
+    features_subset = np.delete(features, lst, axis=1)
+    print(f"Using{features_subset.shape[1] / num_original_features: .2%} to cover entire trajectory")
+    print(f"features_subset: {features_subset.shape}")
+
+    # velocity
+    vt_x_sigma, vt_y_sigma, vt_z_sigma = velocity_std(linear_velocity)
+    wt_r_sigma, wt_p_sigma, wt_y_sigma = velocity_std(angular_velocity)
+    cov_vec = np.array([vt_x_sigma, vt_y_sigma, vt_z_sigma, wt_r_sigma, wt_p_sigma, wt_y_sigma],
+                       dtype=np.float32) ** 2
+    cov_diag = np.diag(cov_vec)
+    # CAM Param
+    fs_u = K[0, 0]  # focal length [m],  pixel scaling [pixels/m]
+    fs_v = K[1, 1]  # focal length [m],  pixel scaling [pixels/m]
+    cu = K[0, 2]  # principal point [pixels]
+    cv = K[1, 2]  # principal point [pixels]
+    b = float(b)  # stereo baseline [m]
+    # Stereo camera intrinsic calibration matrix M
+    M = get_M(fs_u, fs_v, cu, cv, b)
+    # transformation O_T_I from the IMU to camera optical frame (extrinsic param)
+    imu_T_cam = imu_T_cam.astype(np.float32)
+    cam_T_imu = np.linalg.inv(imu_T_cam)
+    if VERBOSE:
+        print(f"vt_sigma: {vt_x_sigma, vt_y_sigma, vt_z_sigma}")
+        print(f"wt_sigma: {wt_r_sigma, wt_p_sigma, wt_y_sigma}")
+        print(f"K: {K.shape}\n{K}\n")
+        print(f"M: {M.shape}\n{M}\n")
+        print(f"imu_T_cam: {imu_T_cam.shape}\n{imu_T_cam}\n")
+        print(f"cam_T_imu: {cam_T_imu.shape}\n{cam_T_imu}")
+    del filename, num_original_features, VERBOSE, features, lst
+    del fs_u, fs_v, cu, cv
+    del vt_x_sigma, vt_y_sigma, vt_z_sigma
+    del wt_r_sigma, wt_p_sigma, wt_y_sigma, cov_vec
+    toc(start_load, name="Loading Data")
+    ###################################################################################################################
+    '''Init Var'''
+    # Transpose of Projection Matrix
+    P_T = np.array([[1, 0, 0],
+                    [0, 1, 0],
+                    [0, 0, 1],
+                    [0, 0, 0]],
+                   dtype=np.float32)
+    # indicator
+    unobserved = np.array([-1, -1, -1, -1], dtype=np.int8)
+    num_timestamps = features_subset.shape[2]
+    num_landmarks = features_subset.shape[1]  # M
+    ##################################################################################################################
+    '''Init pose_trajectory '''
+    pose_trajectory = np.empty((4, 4, num_timestamps), dtype=np.float32)
+    # At t = 0, R=eye(3) p =zeros(3)
+    T_imu_mu_t = np.eye(4, dtype=np.float32)  # ∈ R^{4×4}
+    T_imu_sigma_t = np.eye(6, dtype=np.float32)  # ∈ R^{6×6}
+    pose_trajectory[:, :, 0] = T_imu_mu_t
+    '''Init landmarks '''
+    landmarks_mu_t = np.zeros((3 * num_landmarks, 1), dtype=np.float32)  # µt ∈ R^{3M}
+    landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float32)  # Σt ∈ R^{3M×3M}
+    obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float32)
+
+    '''Init combined mean and covariance matrix'''
+    mu = np.block([[T_imu_mu_t.reshape(-1, 1)], [landmarks_mu_t]])
+    del T_imu_mu_t, landmarks_mu_t
+    sigma = np.block([[T_imu_sigma_t, np.zeros((6, 3 * num_landmarks))],
+                     [np.zeros((3 * num_landmarks, 6)), landmarks_sigma_t]])
+    del T_imu_sigma_t, landmarks_sigma_t
+    print(mu.shape)
+    print(sigma.shape)
+    ###################################################################################################################
+    for i in tqdm(range(1, num_timestamps)):
+        tau = t[i] - t[i - 1]
+        # (a) IMU Localization via EKF Prediction
+        # Generalized velocity:[vt wt].T 6x1
+        u_t = np.vstack((linear_velocity[:, i].reshape(3, 1),
+                         angular_velocity[:, i].reshape(3, 1)))  # u(t) \in R^{6}
+        u_t_hat = vec2twist_hat(u_t)  # ξ^ \in R^{4x4}
+        u_t_adj = vec2twist_adj(u_t)  # ξ` \in R^{6x6}
+
+        # Discrete-time Pose Kinematics:
+        world_T_imu = mu[0:16].reshape(4, -1) @ linalg.expm(tau * u_t_hat)
+        mu[0:16] = world_T_imu.reshape(-1, 1)
+        imu_T_world = np.linalg.inv(world_T_imu)
+
+        perturbation = linalg.expm(-tau * u_t_adj)
+        # add noise
+        W = np.random.multivariate_normal(mean=[0, 0, 0, 0, 0, 0], cov=cov_diag).reshape(-1, 1)
+        noise_adj = vec2twist_adj(W)
+        noise_pertu = linalg.expm(tau ** 2 * noise_adj)
+        # T_imu_sigma_t = sigma[:6, :6]
+        sigma[:6, :6] = np.linalg.multi_dot([noise_pertu, perturbation, sigma[:6, :6], perturbation.T, noise_pertu.T])
+
+        ###############################################################################################################
+        # (c) Landmark Mapping via EKF Update
+        # world frame to cam frame
+        cam_T_world = cam_T_imu @ imu_T_world
+        world_T_cam = world_T_imu @ imu_T_cam
+        # Valid observed features at time t
+        features_t = features_subset[:, :, i]
+        feature_index = tuple(np.where(np.sum(features_t, axis=0) > -4)[0])
+        update_feature_index = []
+        update_feature = np.empty((4, 0), dtype=np.float32)
+
+        # if landmarks are observed
+        num_obs = len(feature_index)
+        if num_obs != 0:
+            # Extract observed_features_pixels
+            observed_features_pixels = features_t[:, feature_index]
+            # Transform pixels to world frame in homogenous coord
+            m_world_ = pixel2world(observed_features_pixels, K, b, world_T_cam)
+
+            for j in range(num_obs):
+                current_index = feature_index[j]
+                # if first time seen, initialize landmarks
+                if np.array_equal(obs_mu_t[:, current_index], unobserved):
+                    obs_mu_t[:, current_index] = observed_features_pixels[:, j]
+
+                    landmarks_mu_t = mu[16:].reshape(3, -1)
+                    landmarks_mu_t[:, current_index] = np.delete(m_world_[:, j], 3, axis=0)
+                    mu[16:] = landmarks_mu_t.reshape(-1, 1)
+                # else update landmark position,
+                else:
+                    update_feature_index.append(current_index)
+                    update_feature = np.hstack((update_feature, m_world_[:, j].reshape(4, 1)))
+
+            # if update_feature is not empty
+            Nt = len(update_feature_index)
+            if Nt != 0:  # and False:
+                # To homogenous coordinate
+                landmarks_mu_t = mu[16:].reshape(3, -1)
+                mu_t_j = reg2homo(landmarks_mu_t[:, update_feature_index])
+                # Re-projection Error
+                z = features_t[:, update_feature_index]
+                z_pred = M @ projection(cam_T_world @ mu_t_j)
+                error = (z - z_pred).reshape(-1, 1)
+                # TODO: single mu, sigma, H
+                # Update landmarks_mu, landmarks_sigma and T_imu_mu and T_imu_sigma simultaneously
+                H = get_update_Jacobian(M, cam_T_imu, imu_T_world, num_landmarks,
+                                        update_feature_index, mu_t_j,
+                                        Nt=Nt, cam_T_world=cam_T_world, P_T=P_T)
+                '''pose update'''
+                # H_imu = get_motion_model_Jacobian(M, cam_T_imu, imu_T_world, mu_t_j, Nt)
+                # K_imu, H_imu_sigma = get_kalman_gain(T_imu_sigma_t, H_imu, Nt, lsq=True, v=100)
+                # T_twist_hat = vec2twist_hat(K_imu @ error)
+                # T_imu_mu_t = T_imu_mu_t @ linalg.expm(T_twist_hat)
+                # T_imu_sigma_t = T_imu_sigma_t - K_imu @ H_imu_sigma
+                '''landmarks update'''
+                # H_map = get_obs_model_Jacobian(M, cam_T_world, num_landmarks,
+                #                                np.array(update_feature_index),
+                #                                mu_t_j, Nt, P_T)
+                # K_map, H_landmarks_sigma = get_kalman_gain(landmarks_sigma_t, H_map, Nt, lsq=True, v=100)
+                # landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ error
+                # landmarks_sigma_t = landmarks_sigma_t - K_map @ H_landmarks_sigma
+        # record update pose traj
+        pose_trajectory[:, :, i] = mu[0:16].reshape(4, -1)
+    landmarks_pos = mu[16:].reshape(3, -1)
+    visualize_trajectory_2d(pose_trajectory, landmarks_pos, show_points=True, show_ori=True)
+    show_map(pose_trajectory, landmarks_pos)
     ###########################################################################################################
 
