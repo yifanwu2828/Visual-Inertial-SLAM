@@ -1,6 +1,6 @@
 from scipy import linalg
 from tqdm import tqdm
-from numba import jit, njit, prange
+from numba import njit, prange
 
 from utils import *
 
@@ -274,6 +274,17 @@ def velocity_std(vt: np.ndarray):
 
 
 @njit(cache=True, fastmath=True)
+def pixel_cov(feature_t):
+    u_L = np.std(feature_t[0:])
+    v_L = np.std(feature_t[1:])
+    u_R = np.std(feature_t[2:])
+    v_R = np.std(feature_t[3:])
+    pixel_cov_vec = np.array([u_L, v_L, u_R, v_R], dtype=np.float64) ** 2
+    pixel_cov_diag = np.diag(pixel_cov_vec)
+    return pixel_cov_diag
+
+
+@njit(cache=True, fastmath=True)
 def pixel2world(pixels: np.ndarray, K: np.ndarray, b: float, world_T_cam: np.ndarray) -> np.ndarray:
     """
     Convert from pixels to world coordinates
@@ -430,7 +441,6 @@ def main():
     #             z = features_t[:, update_feature_index]
     #             z_pred = M @ projection(cam_T_world @ mu_t_j)
     #             error = (z - z_pred).reshape(-1, 1)
-    #             # TODO: single mu, sigma, H
     #
     #             # Update landmarks_mu, landmarks_sigma and T_imu_mu and T_imu_sigma simultaneously
     #             '''pose update'''
@@ -465,7 +475,7 @@ if __name__ == '__main__':
     num_original_features = features.shape[1]
 
     # select subset of features
-    factor = 3  # 10
+    factor = 10  # 10
     lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if not skip_feature_idx % factor == 0]
     features_subset = np.delete(features, lst, axis=1)
     print(f"Using{features_subset.shape[1] / num_original_features: .2%} to cover entire trajectory")
@@ -518,11 +528,11 @@ if __name__ == '__main__':
     pose_trajectory2 = np.empty((4, 4, num_timestamps), dtype=np.float64)
     # At t = 0, R=eye(3) p =zeros(3)
     T_imu_mu_t = np.eye(4, dtype=np.float64)  # ∈ R^{4×4}
-    T_imu_sigma_t = 1e-3* np.eye(6, dtype=np.float64)  # ∈ R^{6×6}
+    T_imu_sigma_t = np.eye(6, dtype=np.float64)  # ∈ R^{6×6}
     pose_trajectory[:, :, 0] = T_imu_mu_t
     '''Init landmarks '''
     landmarks_mu_t = np.zeros((3 * num_landmarks, 1), dtype=np.float64)  # µt ∈ R^{3M}
-    landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
+    landmarks_sigma_t = 0.5*np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
     obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float64)
 
     '''Init combined mean and covariance matrix'''
