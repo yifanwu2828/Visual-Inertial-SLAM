@@ -68,9 +68,9 @@ def visualize_trajectory_2d(pose, landmark=None, show_points=False, path_name="U
     """
     fig, ax = plt.subplots(figsize=(5, 5))
     n_pose = pose.shape[2]
-    ax.plot(pose[0, 3, :], pose[1, 3, :], 'r-', label=path_name,)
-    ax.scatter(pose[0, 3, 0], pose[1, 3, 0], marker='s', label="start", linewidths=3)
-    ax.scatter(pose[0, 3, -1], pose[1, 3, -1], marker='o', label="end", linewidths=3)
+    ax.plot(pose[0, 3, :], pose[1, 3, :], 'r-', label=path_name, linewidth=2)
+    ax.scatter(pose[0, 3, 0], pose[1, 3, 0], marker='s', label="start", linewidths=2)
+    ax.scatter(pose[0, 3, -1], pose[1, 3, -1], marker='o', label="end", linewidths=2)
 
     if show_ori:
         select_ori_index = list(range(0, n_pose, max(int(n_pose / 50), 1)))
@@ -86,7 +86,7 @@ def visualize_trajectory_2d(pose, landmark=None, show_points=False, path_name="U
         ax.quiver(pose[0, 3, select_ori_index], pose[1, 3, select_ori_index], dx, dy,
                   color="b", units="xy", width=1)
     if show_points:
-        ax.plot(landmark[0, :], landmark[1, :], color='g', markersize=1, label="landmark", )
+        ax.plot(landmark[0, :], landmark[1, :], 'go', markersize=1, label="landmark", )
     ax.set_xlabel('x')
     ax.set_ylabel('y')
     ax.axis('equal')
