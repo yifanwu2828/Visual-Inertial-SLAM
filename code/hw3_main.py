@@ -1,6 +1,6 @@
 from scipy import linalg
 from tqdm import tqdm
-from numba import njit, prange
+from numba import jit, njit, prange
 
 from utils import *
 
@@ -37,7 +37,7 @@ def vec2skew(x: np.ndarray) -> np.ndarray:
     x_hat = np.array([[0, -x3, x2],
                       [x3, 0, -x1],
                       [-x2, x1, 0]],
-                     dtype=np.float32)
+                     dtype=np.float64)
     return x_hat
 
 
@@ -51,7 +51,7 @@ def vec2twist_hat(x: np.ndarray) -> np.ndarray:
     """
     assert x.size == 6
     return np.block([[vec2skew(x[3:6, 0]), x[0:3, 0].reshape(3, 1)],
-                     [np.zeros((1, 4), dtype=np.float32)]])
+                     [np.zeros((1, 4), dtype=np.float64)]])
 
 
 def vec2twist_adj(x: np.ndarray) -> np.ndarray:
@@ -62,7 +62,7 @@ def vec2twist_adj(x: np.ndarray) -> np.ndarray:
     """
     assert x.size == 6
     return np.block([[vec2skew(x[3:6, 0]), vec2skew(x[0:3, 0])],
-                     [np.zeros((3, 3), dtype=np.float32), vec2skew(x[3:6, 0])]])
+                     [np.zeros((3, 3), dtype=np.float64), vec2skew(x[3:6, 0])]])
 
 
 def circle_dot(s: np.ndarray) -> np.ndarray:
@@ -74,8 +74,8 @@ def circle_dot(s: np.ndarray) -> np.ndarray:
     s = s.reshape(-1)
     assert s.size == 4
     assert abs(s[-1] - 1) < 1e-8
-    res = np.hstack([np.eye(3, dtype=np.float32), -vec2skew(s[:3])])
-    res = np.vstack([res, np.zeros((1, 6), dtype=np.float32)])
+    res = np.hstack([np.eye(3, dtype=np.float64), -vec2skew(s[:3])])
+    res = np.vstack([res, np.zeros((1, 6), dtype=np.float64)])
     return res
 
 
@@ -88,7 +88,7 @@ def reg2homo(X: np.ndarray) -> np.ndarray:
     return X_ -> [[X]
                   [1]]
     """
-    ones = np.ones((1, X.shape[1]), dtype=np.float32)
+    ones = np.ones((1, X.shape[1]), dtype=np.float64)
     X_ = np.concatenate((X, ones), axis=0)
     return X_
 
@@ -112,7 +112,7 @@ def projection_derivative(q: np.ndarray) -> np.ndarray:
     :param q: numpy.array
     return: dπ(q)/dq 4x4
     """
-    dpi_dq = np.eye(4, dtype=np.float32)
+    dpi_dq = np.eye(4, dtype=np.float64)
     dpi_dq[2, 2] = 0.0
     dpi_dq[0, 2] = -q[0] / q[2]
     dpi_dq[1, 2] = -q[1] / q[2]
@@ -136,7 +136,7 @@ def get_M(fsu: float, fsv: float, cu: float, cv: float, b: float) -> np.ndarray:
                   [0, fsv, cv, 0],
                   [fsu, 0, cu, -fsu * b],
                   [0, fsv, cv, 0]],
-                 dtype=np.float32)
+                 dtype=np.float64)
     return M
 
 
@@ -158,12 +158,12 @@ def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu, Nt=None
                         [0, 1, 0],
                         [0, 0, 1],
                         [0, 0, 0]],
-                       dtype=np.float32)
+                       dtype=np.float64)
     if Nt is None:
         Nt = update_feature_index.size
 
-    H = np.zeros((4 * Nt, 3 * Mt), dtype=np.float32)  # Ht+1 ∈ R^{4Nt×3M}
-    for j in prange(Nt):
+    H = np.zeros((4 * Nt, 3 * Mt), dtype=np.float64)  # Ht+1 ∈ R^{4Nt×3M}
+    for j in range(Nt):
         index = update_feature_index[j]
         dpi_dq = projection_derivative(cam_T_world @ mu[:, j])
         # H_ij = M @ dpi_dq @ cam_T_world @ P_T  # H_ij∈ R^{4×3}
@@ -174,7 +174,16 @@ def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu, Nt=None
 
 @njit(cache=True, parallel=True, fastmath=True)
 def get_motion_model_Jacobian(M, cam_T_imu, T_imu_inv, m, Nt):
-    H = np.empty((4 * Nt, 6), dtype=np.float32)  # Ht+1 ∈{4Ntx6}
+    """
+    Observation Model Jacobian H_{t+1} ∈ R^{4Nt×3M}
+    :param: M: 4x4 stereo camera calibration matrix
+    :param: cam_T_imu: 4x4 transformation matrix {imu} -> {CAM}
+    :param: T_imu_inv: inv(T_imu_t) 4x4 transformation matrix {W} -> {IMU}
+    :param: m: landmarks_mu_t: mean of landmarks position in world frame
+    :param: Nt: number of update features
+    :return: H_{t+1}
+    """
+    H = np.empty((4 * Nt, 6), dtype=np.float64)  # Ht+1 ∈{4Ntx6}
     for j in prange(Nt):
         prod = T_imu_inv @ m[:, j]
         dpi_dq = projection_derivative(cam_T_imu @ prod)
@@ -203,13 +212,13 @@ def get_update_Jacobian(M, cam_T_imu, T_imu_inv, Mt, update_feature_index, m, Nt
                         [0, 1, 0],
                         [0, 0, 1],
                         [0, 0, 0]],
-                       dtype=np.float32)
+                       dtype=np.float64)
     if Nt is None:
         Nt = update_feature_index.size
     if cam_T_world is None:
         cam_T_world = cam_T_imu @ T_imu_inv
 
-    H = np.zeros((4 * Nt, 3 * Mt + 6), dtype=np.float32)  # Ht+1 ∈{4Ntx3M+6}
+    H = np.zeros((4 * Nt, 3 * Mt + 6), dtype=np.float64)  # Ht+1 ∈{4Ntx3M+6}
 
     for j in range(Nt):
         index = update_feature_index[j]
@@ -239,7 +248,7 @@ def get_kalman_gain(sigma, H, Nt, lsq=False, v=100):
     # V symmetric, sigma symmetric
     # H_sigma @ H.T symmetric
     # H_sigma @ H.T+ V symmetric -> S.T = S
-    V = np.kron(np.eye(4 * Nt, dtype=np.float32), v)
+    V = np.kron(np.eye(4 * Nt, dtype=np.float64), v)
     H_sigma = H @ sigma
     S_T = H_sigma @ H.T + V
     if lsq:
@@ -278,12 +287,12 @@ def pixel2world(pixels: np.ndarray, K: np.ndarray, b: float, world_T_cam: np.nda
     fs_v = K[1, 1]  # focal length [m],  pixel scaling [pixels/m]
     cu = K[0, 2]  # principal point [pixels]
     cv = K[1, 2]  # principal point [pixels]
-    m_o = np.ones((4, pixels.shape[1]), dtype=np.float32)
+    m_o = np.ones((4, pixels.shape[1]), dtype=np.float64)
     m_o[2, :] = fs_u * b / (pixels[0, :] - pixels[2, :])
     m_o[1, :] = (pixels[1, :] - cv) / fs_v * m_o[2, :]
     m_o[0, :] = (pixels[0, :] - cu) / fs_u * m_o[2, :]
     # Transform from pixel to world frame in in homogenous coordinates
-    m_world = world_T_cam.astype(np.float32) @ m_o
+    m_world = world_T_cam.astype(np.float64) @ m_o
     return m_world
 
 
@@ -466,7 +475,7 @@ if __name__ == '__main__':
     vt_x_sigma, vt_y_sigma, vt_z_sigma = velocity_std(linear_velocity)
     wt_r_sigma, wt_p_sigma, wt_y_sigma = velocity_std(angular_velocity)
     cov_vec = np.array([vt_x_sigma, vt_y_sigma, vt_z_sigma, wt_r_sigma, wt_p_sigma, wt_y_sigma],
-                       dtype=np.float32) ** 2
+                       dtype=np.float64) ** 2
     cov_diag = np.diag(cov_vec)
     # CAM Param
     fs_u = K[0, 0]  # focal length [m],  pixel scaling [pixels/m]
@@ -477,7 +486,7 @@ if __name__ == '__main__':
     # Stereo camera intrinsic calibration matrix M
     M = get_M(fs_u, fs_v, cu, cv, b)
     # transformation O_T_I from the IMU to camera optical frame (extrinsic param)
-    imu_T_cam = imu_T_cam.astype(np.float32)
+    imu_T_cam = imu_T_cam.astype(np.float64)
     cam_T_imu = np.linalg.inv(imu_T_cam)
     if VERBOSE:
         print(f"vt_sigma: {vt_x_sigma, vt_y_sigma, vt_z_sigma}")
@@ -498,23 +507,23 @@ if __name__ == '__main__':
                     [0, 1, 0],
                     [0, 0, 1],
                     [0, 0, 0]],
-                   dtype=np.float32)
+                   dtype=np.float64)
     # indicator
     unobserved = np.array([-1, -1, -1, -1], dtype=np.int8)
     num_timestamps = features_subset.shape[2]
     num_landmarks = features_subset.shape[1]  # M
     ##################################################################################################################
     '''Init pose_trajectory '''
-    pose_trajectory = np.empty((4, 4, num_timestamps), dtype=np.float32)
-    pose_trajectory2 = np.empty((4, 4, num_timestamps), dtype=np.float32)
+    pose_trajectory = np.empty((4, 4, num_timestamps), dtype=np.float64)
+    pose_trajectory2 = np.empty((4, 4, num_timestamps), dtype=np.float64)
     # At t = 0, R=eye(3) p =zeros(3)
-    T_imu_mu_t = np.eye(4, dtype=np.float32)  # ∈ R^{4×4}
-    T_imu_sigma_t = 1e-3* np.eye(6, dtype=np.float32)  # ∈ R^{6×6}
+    T_imu_mu_t = np.eye(4, dtype=np.float64)  # ∈ R^{4×4}
+    T_imu_sigma_t = 1e-3* np.eye(6, dtype=np.float64)  # ∈ R^{6×6}
     pose_trajectory[:, :, 0] = T_imu_mu_t
     '''Init landmarks '''
-    landmarks_mu_t = np.zeros((3 * num_landmarks, 1), dtype=np.float32)  # µt ∈ R^{3M}
-    landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float32)  # Σt ∈ R^{3M×3M}
-    obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float32)
+    landmarks_mu_t = np.zeros((3 * num_landmarks, 1), dtype=np.float64)  # µt ∈ R^{3M}
+    landmarks_sigma_t = np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
+    obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float64)
 
     '''Init combined mean and covariance matrix'''
     mu = np.block([[landmarks_mu_t], [T_imu_mu_t.reshape(-1, 1)]])
@@ -537,6 +546,7 @@ if __name__ == '__main__':
 
         # Discrete-time Pose Kinematics:
         world_T_imu = mu[-16:].reshape(4, -1) @ linalg.expm(tau * u_t_hat)
+        # T_imu_mu_t = mu[-16:].reshape(4, -1)
         mu[-16:] = world_T_imu.reshape(-1, 1)
         imu_T_world = np.linalg.inv(world_T_imu)
 
@@ -558,7 +568,7 @@ if __name__ == '__main__':
         features_t = features_subset[:, :, i]
         feature_index = tuple(np.where(np.sum(features_t, axis=0) > -4)[0])
         update_feature_index = []
-        update_feature = np.empty((4, 0), dtype=np.float32)
+        update_feature = np.empty((4, 0), dtype=np.float64)
 
         # if landmarks are observed
         num_obs = len(feature_index)
@@ -581,7 +591,7 @@ if __name__ == '__main__':
                 else:
                     update_feature_index.append(current_index)
                     update_feature = np.hstack((update_feature, m_world_[:, j].reshape(4, 1)))
-
+            ############################################################################################################
             # if update_feature is not empty
             Nt = len(update_feature_index)
             if Nt != 0:  # and False:
