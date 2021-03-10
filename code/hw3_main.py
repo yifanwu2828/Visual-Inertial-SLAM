@@ -1,6 +1,6 @@
 from scipy import linalg
 from tqdm import tqdm
-from numba import njit, prange
+from numba import njit
 
 from utils import *
 
@@ -172,7 +172,7 @@ def get_obs_model_Jacobian(M, cam_T_world, Mt, update_feature_index, mu, Nt=None
     return H
 
 
-@njit(cache=True, parallel=True, fastmath=True)
+
 def get_motion_model_Jacobian(M, cam_T_imu, T_imu_inv, m, Nt):
     """
     Observation Model Jacobian H_{t+1} ∈ R^{4Nt×3M}
@@ -184,7 +184,7 @@ def get_motion_model_Jacobian(M, cam_T_imu, T_imu_inv, m, Nt):
     :return: H_{t+1}
     """
     H = np.empty((4 * Nt, 6), dtype=np.float64)  # Ht+1 ∈{4Ntx6}
-    for j in prange(Nt):
+    for j in range(Nt):
         prod = T_imu_inv @ m[:, j]
         dpi_dq = projection_derivative(cam_T_imu @ prod)
         s_circle_dot = circle_dot(prod)
@@ -319,7 +319,7 @@ def main():
     # num_original_features = features.shape[1]
     #
     # # select subset of features
-    # factor = 40  # 10
+    # factor = 3 # 10
     # lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if not skip_feature_idx % factor == 0]
     # print(lst)
     # features_subset = np.delete(features, lst, axis=1)
@@ -450,12 +450,12 @@ def main():
     #             # T_imu_mu_t = T_imu_mu_t @ linalg.expm(T_twist_hat)
     #             # T_imu_sigma_t = T_imu_sigma_t - K_imu @ H_imu_sigma
     #             '''landmarks update'''
-    #             H_map = get_obs_model_Jacobian(M, cam_T_world, num_landmarks,
-    #                                            np.array(update_feature_index),
-    #                                            mu_t_j, Nt, P_T)
-    #             K_map, H_landmarks_sigma = get_kalman_gain(landmarks_sigma_t, H_map, Nt, lsq=True, v=100)
-    #             landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ error
-    #             landmarks_sigma_t = landmarks_sigma_t - K_map @ H_landmarks_sigma
+    #             # H_map = get_obs_model_Jacobian(M, cam_T_world, num_landmarks,
+    #             #                                np.array(update_feature_index),
+    #             #                                mu_t_j, Nt, P_T)
+    #             # K_map, H_landmarks_sigma = get_kalman_gain(landmarks_sigma_t, H_map, Nt, lsq=True, v=100)
+    #             # landmarks_mu_t = landmarks_mu_t.reshape(-1, 1) + K_map @ error
+    #             # landmarks_sigma_t = landmarks_sigma_t - K_map @ H_landmarks_sigma
     #     pose_trajectory[:, :, i] = T_imu_mu_t
     # landmarks_pos = landmarks_mu_t.reshape(3, -1)
     # visualize_trajectory_2d(pose_trajectory, landmarks_pos, show_points=False, show_ori=True)
@@ -475,7 +475,7 @@ if __name__ == '__main__':
     num_original_features = features.shape[1]
 
     # select subset of features
-    factor = 10  # 10
+    factor = 3  # 10
     lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if not skip_feature_idx % factor == 0]
     features_subset = np.delete(features, lst, axis=1)
     print(f"Using{features_subset.shape[1] / num_original_features: .2%} to cover entire trajectory")
@@ -528,11 +528,11 @@ if __name__ == '__main__':
     pose_trajectory2 = np.empty((4, 4, num_timestamps), dtype=np.float64)
     # At t = 0, R=eye(3) p =zeros(3)
     T_imu_mu_t = np.eye(4, dtype=np.float64)  # ∈ R^{4×4}
-    T_imu_sigma_t = np.eye(6, dtype=np.float64)  # ∈ R^{6×6}
+    T_imu_sigma_t = 1e-3 * np.eye(6, dtype=np.float64)  # ∈ R^{6×6}
     pose_trajectory[:, :, 0] = T_imu_mu_t
     '''Init landmarks '''
     landmarks_mu_t = np.zeros((3 * num_landmarks, 1), dtype=np.float64)  # µt ∈ R^{3M}
-    landmarks_sigma_t = 0.5*np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
+    landmarks_sigma_t = 5e-3 * np.eye(3 * num_landmarks, dtype=np.float64)  # Σt ∈ R^{3M×3M}
     obs_mu_t = -1 * np.ones((4, num_landmarks), dtype=np.float64)
 
     '''Init combined mean and covariance matrix'''
@@ -618,7 +618,7 @@ if __name__ == '__main__':
                                               Nt=Nt, cam_T_world=cam_T_world, P_T=P_T)
                 '''pose update'''
                 # K: 3M+6 x 4Nt,
-                K_joint, H_sigma_joint = get_kalman_gain(sigma, H_joint, Nt, lsq=True, v=500)
+                K_joint, H_sigma_joint = get_kalman_gain(sigma, H_joint, Nt, lsq=True, v=100)
                 T_twist_hat = vec2twist_hat(K_joint[-6:, :] @ error)
                 mu[-16:] = (world_T_imu @ linalg.expm(T_twist_hat)).reshape(-1, 1)
                 sigma[-6:, -6:] = sigma[-6:, -6:] - K_joint[-6:, :] @ H_sigma_joint[:, -6:]

@@ -90,7 +90,7 @@ def visualize_trajectory_2d(pose, landmark=None, show_points=False, path_name="U
     ax.set_xlabel('x')
     ax.set_ylabel('y')
     ax.axis('equal')
-    ax.set_xlim([-1250,500])
+    # ax.set_xlim([-1250,500])
     ax.set_ylim([-1200,600])
     ax.grid(False)
     ax.legend()
