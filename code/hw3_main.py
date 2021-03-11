@@ -585,7 +585,7 @@ if __name__ == '__main__':
             sigma[-6:, -6:] = np.linalg.multi_dot(
                 [noise_pertu, perturbation, sigma[-6:, -6:], perturbation.T, noise_pertu.T])
             del u_t, u_t_hat, W, noise_adj, noise_pertu, perturbation
-            ###############################################################################################################
+            ############################################################################################################
             # (c) Landmark Mapping via EKF Update
             # world frame to cam frame
             cam_T_world = cam_T_imu @ imu_T_world
