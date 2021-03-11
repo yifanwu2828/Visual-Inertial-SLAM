@@ -481,11 +481,21 @@ if __name__ == '__main__':
     num_original_features = features.shape[1]
 
     # select subset of features
-    factor = 5
-    lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if not skip_feature_idx % factor == 0]
-    features_subset = np.delete(features, lst, axis=1)
-    print(f"Using{features_subset.shape[1] / num_original_features: .2%} to cover entire trajectory")
-    print(f"features_subset: {features_subset.shape}")
+    if not DEMO:
+        factor = 5
+        lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if
+               not skip_feature_idx % factor == 0]
+        features_subset = np.delete(features, lst, axis=1)
+        print(f"Using{features_subset.shape[1] / num_original_features: .2%} to cover entire trajectory")
+        print(f"features_subset: {features_subset.shape}")
+
+    else:
+        factor = 3
+        lst = [skip_feature_idx for skip_feature_idx in range(0, features.shape[1]) if
+               not skip_feature_idx % factor == 0]
+        features_subset = np.delete(features, lst, axis=1)
+        print(f"Using{features_subset.shape[1] / num_original_features: .2%} to cover entire trajectory")
+        print(f"features_subset: {features_subset.shape}")
 
     # velocity
     vt_x_sigma, vt_y_sigma, vt_z_sigma = velocity_std(linear_velocity)
@@ -546,99 +556,100 @@ if __name__ == '__main__':
                       [np.zeros((6, 3 * num_landmarks)), T_imu_sigma_t]])
     del T_imu_sigma_t, landmarks_sigma_t
     ###################################################################################################################
-    start_SLAM = tic("########## Start Visual-Inertial-SLAM ##########")
-    print(f"Number of Features: {features_subset.shape[1]}")
-    print(f"mu:16+3M {mu.shape}")
-    print(f"sigma:3M+6 x 3M+6 {sigma.shape}")
-    for i in tqdm(range(1, num_timestamps)):
-        tau = t[i] - t[i - 1]
-        # (a) IMU Localization via EKF Prediction
-        # Generalized velocity:[vt wt].T 6x1
-        u_t = np.vstack((linear_velocity[:, i].reshape(3, 1),
-                         angular_velocity[:, i].reshape(3, 1)))  # u(t) \in R^{6}
-        u_t_hat = vec2twist_hat(u_t)  # ξ^ \in R^{4x4}
-        u_t_adj = vec2twist_adj(u_t)  # ξ` \in R^{6x6}
+    if not DEMO:
+        start_SLAM = tic("########## Start Visual-Inertial-SLAM ##########")
+        print(f"Number of Features: {features_subset.shape[1]}")
+        print(f"mu:16+3M {mu.shape}")
+        print(f"sigma:3M+6 x 3M+6 {sigma.shape}")
+        for i in tqdm(range(1, num_timestamps)):
+            tau = t[i] - t[i - 1]
+            # (a) IMU Localization via EKF Prediction
+            # Generalized velocity:[vt wt].T 6x1
+            u_t = np.vstack((linear_velocity[:, i].reshape(3, 1),
+                             angular_velocity[:, i].reshape(3, 1)))  # u(t) \in R^{6}
+            u_t_hat = vec2twist_hat(u_t)  # ξ^ \in R^{4x4}
+            u_t_adj = vec2twist_adj(u_t)  # ξ` \in R^{6x6}
 
-        # Discrete-time Pose Kinematics:
-        world_T_imu = mu[-16:].reshape(4, -1) @ linalg.expm(tau * u_t_hat)
-        # T_imu_mu_t = mu[-16:].reshape(4, -1)
-        mu[-16:] = world_T_imu.reshape(-1, 1)
-        imu_T_world = np.linalg.inv(world_T_imu)
+            # Discrete-time Pose Kinematics:
+            world_T_imu = mu[-16:].reshape(4, -1) @ linalg.expm(tau * u_t_hat)
+            # T_imu_mu_t = mu[-16:].reshape(4, -1)
+            mu[-16:] = world_T_imu.reshape(-1, 1)
+            imu_T_world = np.linalg.inv(world_T_imu)
 
-        # add noise
-        W = np.random.multivariate_normal(mean=[0, 0, 0, 0, 0, 0], cov=cov_diag).reshape(-1, 1)
-        noise_adj = vec2twist_adj(W)
-        noise_pertu = linalg.expm(tau ** 2 * noise_adj)
-        perturbation = linalg.expm(-tau * u_t_adj)
-        # T_imu_sigma_t = sigma[:6, :6]
-        sigma[-6:, -6:] = np.linalg.multi_dot(
-            [noise_pertu, perturbation, sigma[-6:, -6:], perturbation.T, noise_pertu.T])
-        del u_t, u_t_hat, W, noise_adj, noise_pertu, perturbation
-        ###############################################################################################################
-        # (c) Landmark Mapping via EKF Update
-        # world frame to cam frame
-        cam_T_world = cam_T_imu @ imu_T_world
-        world_T_cam = world_T_imu @ imu_T_cam
-        # Valid observed features at time t
-        features_t = features_subset[:, :, i]
-        feature_index = tuple(np.where(np.sum(features_t, axis=0) > -4)[0])
-        update_feature_index = []
+            # add noise
+            W = np.random.multivariate_normal(mean=[0, 0, 0, 0, 0, 0], cov=cov_diag).reshape(-1, 1)
+            noise_adj = vec2twist_adj(W)
+            noise_pertu = linalg.expm(tau ** 2 * noise_adj)
+            perturbation = linalg.expm(-tau * u_t_adj)
+            # T_imu_sigma_t = sigma[:6, :6]
+            sigma[-6:, -6:] = np.linalg.multi_dot(
+                [noise_pertu, perturbation, sigma[-6:, -6:], perturbation.T, noise_pertu.T])
+            del u_t, u_t_hat, W, noise_adj, noise_pertu, perturbation
+            ###############################################################################################################
+            # (c) Landmark Mapping via EKF Update
+            # world frame to cam frame
+            cam_T_world = cam_T_imu @ imu_T_world
+            world_T_cam = world_T_imu @ imu_T_cam
+            # Valid observed features at time t
+            features_t = features_subset[:, :, i]
+            feature_index = tuple(np.where(np.sum(features_t, axis=0) > -4)[0])
+            update_feature_index = []
 
-        # if landmarks are observed
-        num_obs = len(feature_index)
-        if num_obs != 0:
-            # Extract observed_features_pixels
-            observed_features_pixels = features_t[:, feature_index]
-            # Transform pixels to world frame in homogenous coord
-            m_world_ = pixel2world(observed_features_pixels, K, b, world_T_cam)
+            # if landmarks are observed
+            num_obs = len(feature_index)
+            if num_obs != 0:
+                # Extract observed_features_pixels
+                observed_features_pixels = features_t[:, feature_index]
+                # Transform pixels to world frame in homogenous coord
+                m_world_ = pixel2world(observed_features_pixels, K, b, world_T_cam)
 
-            for j in range(num_obs):
-                current_index = feature_index[j]
-                # if first time seen, initialize landmarks
-                if np.array_equal(obs_mu_t[:, current_index], unobserved):
-                    obs_mu_t[:, current_index] = np.full_like(observed_features_pixels[:, j], -2, dtype=np.int8)
+                for j in range(num_obs):
+                    current_index = feature_index[j]
+                    # if first time seen, initialize landmarks
+                    if np.array_equal(obs_mu_t[:, current_index], unobserved):
+                        obs_mu_t[:, current_index] = np.full_like(observed_features_pixels[:, j], -2, dtype=np.int8)
+                        landmarks_mu_t = mu[0:-16].reshape(3, -1)
+                        landmarks_mu_t[:, current_index] = np.delete(m_world_[:, j], 3, axis=0)
+                        mu[0:-16] = landmarks_mu_t.reshape(-1, 1)
+                    # else update landmark position,
+                    else:
+                        # record the index of feature will be updated
+                        update_feature_index.append(current_index)
+                ############################################################################################################
+                # if update_feature is not empty, update landmark position
+                Nt = len(update_feature_index)
+                if Nt != 0:
+                    # To homogenous coordinate
                     landmarks_mu_t = mu[0:-16].reshape(3, -1)
-                    landmarks_mu_t[:, current_index] = np.delete(m_world_[:, j], 3, axis=0)
-                    mu[0:-16] = landmarks_mu_t.reshape(-1, 1)
-                # else update landmark position,
-                else:
-                    # record the index of feature will be updated
-                    update_feature_index.append(current_index)
-            ############################################################################################################
-            # if update_feature is not empty, update landmark position
-            Nt = len(update_feature_index)
-            if Nt != 0:
-                # To homogenous coordinate
-                landmarks_mu_t = mu[0:-16].reshape(3, -1)
-                mu_t_j = reg2homo(landmarks_mu_t[:, update_feature_index])
-                # Re-projection Error
-                z = features_t[:, update_feature_index]
-                z_pred = M @ projection(cam_T_world @ mu_t_j)
-                error = (z - z_pred).reshape(-1, 1)
-                # Update landmarks_mu, landmarks_sigma and T_imu_mu and T_imu_sigma simultaneously
-                H_joint = get_update_Jacobian(M, cam_T_imu, imu_T_world, num_landmarks,
-                                              np.array(update_feature_index), mu_t_j,
-                                              Nt=Nt, cam_T_world=cam_T_world, P_T=P_T)
-                del mu_t_j, z, z_pred
-                '''pose update'''
-                # K: 3M+6 x 4Nt,
-                K_joint, H_sigma_joint = get_kalman_gain(sigma, H_joint, Nt, lsq=True, v=100)
-                T_twist_hat = vec2twist_hat(K_joint[-6:, :] @ error)
-                del H_joint,
-                mu[-16:] = (world_T_imu @ linalg.expm(T_twist_hat)).reshape(-1, 1)
-                sigma[-6:, -6:] = sigma[-6:, -6:] - K_joint[-6:, :] @ H_sigma_joint[:, -6:]
-                '''landmarks update'''
-                mu[0:-16] = landmarks_mu_t.reshape(-1, 1) + K_joint[:-6, :] @ error
-                sigma[:-6, :-6] = sigma[:-6, :-6] - K_joint[:-6, :] @ H_sigma_joint[:, :-6]
-                # delete local variable to save memory
-                del K_joint,  H_sigma_joint, T_twist_hat, error
-        # Record pose trajectory at each timestamps
-        pose_trajectory[:, :, i] = mu[-16:].reshape(4, -1)
-    landmarks_pos = mu[0:-16].reshape(3, -1)
-    visualize_trajectory_2d(pose_trajectory, landmarks_pos, show_points=False, show_ori=True)
-    visualize_trajectory_2d(pose_trajectory, landmarks_pos, show_points=True, show_ori=True)
-    show_map(pose_trajectory, landmarks_pos)
-    toc(start_load, name="Finish SLAM")
+                    mu_t_j = reg2homo(landmarks_mu_t[:, update_feature_index])
+                    # Re-projection Error
+                    z = features_t[:, update_feature_index]
+                    z_pred = M @ projection(cam_T_world @ mu_t_j)
+                    error = (z - z_pred).reshape(-1, 1)
+                    # Update landmarks_mu, landmarks_sigma and T_imu_mu and T_imu_sigma simultaneously
+                    H_joint = get_update_Jacobian(M, cam_T_imu, imu_T_world, num_landmarks,
+                                                  np.array(update_feature_index), mu_t_j,
+                                                  Nt=Nt, cam_T_world=cam_T_world, P_T=P_T)
+                    del mu_t_j, z, z_pred
+                    '''pose update'''
+                    # K: 3M+6 x 4Nt,
+                    K_joint, H_sigma_joint = get_kalman_gain(sigma, H_joint, Nt, lsq=True, v=100)
+                    T_twist_hat = vec2twist_hat(K_joint[-6:, :] @ error)
+                    del H_joint,
+                    mu[-16:] = (world_T_imu @ linalg.expm(T_twist_hat)).reshape(-1, 1)
+                    sigma[-6:, -6:] = sigma[-6:, -6:] - K_joint[-6:, :] @ H_sigma_joint[:, -6:]
+                    '''landmarks update'''
+                    mu[0:-16] = landmarks_mu_t.reshape(-1, 1) + K_joint[:-6, :] @ error
+                    sigma[:-6, :-6] = sigma[:-6, :-6] - K_joint[:-6, :] @ H_sigma_joint[:, :-6]
+                    # delete local variable to save memory
+                    del K_joint,  H_sigma_joint, T_twist_hat, error
+            # Record pose trajectory at each timestamps
+            pose_trajectory[:, :, i] = mu[-16:].reshape(4, -1)
+        landmarks_pos = mu[0:-16].reshape(3, -1)
+        visualize_trajectory_2d(pose_trajectory, landmarks_pos, show_points=False, show_ori=True)
+        visualize_trajectory_2d(pose_trajectory, landmarks_pos, show_points=True, show_ori=True)
+        show_map(pose_trajectory, landmarks_pos)
+        toc(start_load, name="Finish SLAM")
     ###########################################################################################################
     '''Saving Result'''
     # if SAVE:
